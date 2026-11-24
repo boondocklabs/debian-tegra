@@ -10,6 +10,9 @@ Build a Debian 13 Jetson TX1 SD image from the signed debian-tegra APT repo.
 
 Options:
   --authorized-keys FILE  Public SSH key(s) for the debian user (required)
+  --wifi-ssid SSID         Wi-Fi network name (requires --wifi-password-file)
+  --wifi-password-file FILE  WPA/WPA2 password or 64-digit hex PSK
+  --wifi-hidden            Connect to an SSID that does not broadcast
   --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
   --no-firmware           Skip firmware and default to the safe boot entry
   --output NAME           Image filename under out/ (default: debian-tegra-tx1-sd.img)
@@ -20,11 +23,15 @@ EOF
 }
 
 if [[ ${1:-} != --container ]]; then
-  authorized_keys= firmware_dir= output=debian-tegra-tx1-sd.img
-  size_mib=4096 hostname=jetson-tx1 force=0 no_firmware=0
+  authorized_keys= firmware_dir= wifi_ssid= wifi_password_file=
+  output=debian-tegra-tx1-sd.img size_mib=4096 hostname=jetson-tx1
+  force=0 no_firmware=0 wifi_hidden=0
   while (($#)); do
     case $1 in
       --authorized-keys) authorized_keys=${2:?missing key file}; shift 2 ;;
+      --wifi-ssid) wifi_ssid=${2:?missing Wi-Fi SSID}; shift 2 ;;
+      --wifi-password-file) wifi_password_file=${2:?missing Wi-Fi password file}; shift 2 ;;
+      --wifi-hidden) wifi_hidden=1; shift ;;
       --firmware-dir) firmware_dir=${2:?missing firmware directory}; shift 2 ;;
       --no-firmware) no_firmware=1; shift ;;
       --output) output=${2:?missing image name}; shift 2 ;;
@@ -48,6 +55,22 @@ if [[ ${1:-} != --container ]]; then
   if [[ -n $firmware_dir && $no_firmware == 1 ]]; then
     echo '--firmware-dir and --no-firmware cannot be combined' >&2; exit 2
   fi
+  if [[ -n $wifi_ssid || -n $wifi_password_file || $wifi_hidden == 1 ]]; then
+    [[ -n $wifi_ssid && -s $wifi_password_file ]] || {
+      echo 'Wi-Fi requires --wifi-ssid and a nonempty --wifi-password-file' >&2; exit 2;
+    }
+    [[ $no_firmware == 0 ]] || {
+      echo 'Wi-Fi options cannot be combined with --no-firmware' >&2; exit 2;
+    }
+    LC_ALL=C
+    [[ ${#wifi_ssid} -le 32 && $wifi_ssid != ' '* && $wifi_ssid != *' ' ]] || {
+      echo 'Wi-Fi SSID must be at most 32 bytes with no edge spaces' >&2; exit 2;
+    }
+    if printf %s "$wifi_ssid" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+      echo 'Wi-Fi SSID cannot contain control characters' >&2; exit 2
+    fi
+    wifi_password_file=$(realpath "$wifi_password_file")
+  fi
   if [[ -n $firmware_dir ]]; then
     [[ -s $firmware_dir/tegra21x/pmu_sig.bin ]] || {
       echo '--firmware-dir must contain tegra21x/pmu_sig.bin' >&2; exit 2;
@@ -62,6 +85,9 @@ if [[ ${1:-} != --container ]]; then
   mounts=(--mount "type=bind,source=$(pwd),target=/project"
           --mount "type=bind,source=$authorized_keys,target=/input/authorized_keys,readonly"
           --mount type=volume,target=/build)
+  if [[ -n $wifi_ssid ]]; then
+    mounts+=(--mount "type=bind,source=$wifi_password_file,target=/input/wifi_password,readonly")
+  fi
   if [[ -n $firmware_dir ]]; then
     firmware_dir=$(realpath "$firmware_dir")
     mounts+=(--mount "type=bind,source=$firmware_dir,target=/input/firmware,readonly")
@@ -96,6 +122,7 @@ if [[ ${1:-} != --container ]]; then
   docker run --rm --privileged --platform linux/arm64 \
     -e IMAGE_NAME="$output" -e IMAGE_SIZE_MIB="$size_mib" \
     -e IMAGE_HOSTNAME="$hostname" -e IMAGE_FORCE="$force" \
+    -e IMAGE_WIFI_SSID="$wifi_ssid" -e IMAGE_WIFI_HIDDEN="$wifi_hidden" \
     "${mounts[@]}" debian-tegra-sd-builder \
     bash /project/scripts/create-sd-image.sh --container
   exit
@@ -313,6 +340,56 @@ method=auto
 method=auto
 EOF
 chmod 600 "$root/etc/NetworkManager/system-connections/wired.nmconnection"
+if [[ -n ${IMAGE_WIFI_SSID:-} ]]; then
+  LC_ALL=C
+  wifi_password=$(cat /input/wifi_password)
+  password_bytes=$(wc -c < /input/wifi_password)
+  password_chars=${#wifi_password}
+  if (( password_bytes == password_chars + 1 )); then
+    [[ $(tail -c 1 /input/wifi_password | od -An -tu1 | tr -d ' ') == 10 ]] || {
+      echo 'Wi-Fi password file contains unsupported bytes' >&2; exit 2;
+    }
+  elif (( password_bytes != password_chars )); then
+    echo 'Wi-Fi password file must contain one line' >&2; exit 2
+  fi
+  if [[ ! $wifi_password =~ ^[[:print:]]+$ || $wifi_password == ' '* || $wifi_password == *' ' ]]; then
+    echo 'Wi-Fi password must be printable ASCII with no edge spaces' >&2; exit 2
+  fi
+  if [[ $wifi_password =~ ^[0-9A-Fa-f]{64}$ ]]; then
+    :
+  elif (( password_chars < 8 || password_chars > 63 )); then
+    echo 'Wi-Fi password must be 8-63 characters or a 64-digit hex PSK' >&2; exit 2
+  fi
+  wifi_ssid_escaped=${IMAGE_WIFI_SSID//\\/\\\\}
+  wifi_password_escaped=${wifi_password//\\/\\\\}
+  wifi_hidden_value=false
+  [[ $IMAGE_WIFI_HIDDEN == 1 ]] && wifi_hidden_value=true
+  wifi_profile=$root/etc/NetworkManager/system-connections/tx1-wifi.nmconnection
+  install -m 600 /dev/null "$wifi_profile"
+  cat > "$wifi_profile" <<EOF
+[connection]
+id=TX1 Wi-Fi
+type=wifi
+interface-name=wlan0
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=$wifi_ssid_escaped
+hidden=$wifi_hidden_value
+security=802-11-wireless-security
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=$wifi_password_escaped
+
+[ipv4]
+method=auto
+[ipv6]
+method=auto
+EOF
+  unset wifi_password wifi_password_escaped
+fi
 cat > "$root/etc/systemd/system/ssh-host-keys.service" <<'EOF'
 [Unit]
 Description=Generate unique SSH host keys on first boot

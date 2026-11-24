@@ -74,6 +74,21 @@ packages. It creates a `debian` account with the supplied SSH key and
 passwordless sudo, enables wired DHCP and serial login, and generates unique
 SSH host keys on first boot.
 
+To connect over WPA/WPA2 Wi-Fi, put the password in a one-line file readable
+only by you, then pass its path when building:
+
+```sh
+bash scripts/create-sd-image.sh --authorized-keys ~/.ssh/id_ed25519.pub \
+  --wifi-ssid 'Your network' --wifi-password-file ~/tx1-wifi-password --force
+```
+
+The password must be 8–63 printable ASCII characters or a 64-digit hex PSK.
+The SSID and password cannot begin or end with a space.
+Add `--wifi-hidden` for a network that does not broadcast its SSID. The image
+stores the password in a root-only NetworkManager profile so Wi-Fi can connect
+at boot; keep the resulting image private. Without these options, the image
+uses wired DHCP and has no Wi-Fi connection profile.
+
 On macOS, identify the SD card with `diskutil list`, then replace `diskN`
 below with that card's disk number:
 
@@ -91,8 +106,8 @@ the SD kernel cannot boot, remove the card and reboot to use eMMC; there is no
 automatic boot-failure fallback. On a TX1 Developer Kit, U-Boot selected this
 SD image, started Linux 6.12, and reached Debian's multi-user serial login.
 The builder also checks the filesystem and partition table. SSH requires a
-working network connection; the image configures wired DHCP but has no Wi-Fi
-credentials.
+working network connection; wired DHCP is always configured, while Wi-Fi
+requires the options above.
 
 By default, the builder downloads NVIDIA's Jetson Linux R32.7.6 TX1 BSP and
 Debian's `firmware-brcm80211` package, checks their pinned SHA-256 hashes,
