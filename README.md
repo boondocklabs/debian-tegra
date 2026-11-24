@@ -60,5 +60,27 @@ to these kernel packages. The tested combination used R36.5.1 `libcuda` from
 NVIDIA's `nvidia-l4t-cuda` package and CUDA 12.6.77 `libcudart` from NVIDIA's
 `cuda-cudart-12-6` package. Those binaries are fetched from NVIDIA separately;
 this repository does not contain or redistribute them. It also contains no
-application, board provisioning, or SD image scripts. The workflow uploads
-build artifacts and does not publish to GitHub Pages or another APT repository.
+application, board provisioning, or SD image scripts.
+
+## APT repository
+
+After a successful build on `main`, the Pages workflow publishes the five
+packages as a signed Debian 13 ARM64 APT repository at
+<https://boondocklabs.github.io/debian-tegra/>. The repository signing key is
+exported alongside the packages. This requires the GitHub Pages source to be
+set to **GitHub Actions** and a dedicated, unencrypted ASCII-armored private
+key in the `APT_GPG_PRIVATE_KEY` Actions secret. The key is used only to sign
+the repository metadata; it is not included in the published files.
+
+On a Debian 13 TX1 system, add the repository with:
+
+```sh
+curl -fsSL https://boondocklabs.github.io/debian-tegra/archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/debian-tegra-archive-keyring.gpg >/dev/null
+echo 'deb [arch=arm64 signed-by=/usr/share/keyrings/debian-tegra-archive-keyring.gpg] https://boondocklabs.github.io/debian-tegra/ trixie main' \
+  | sudo tee /etc/apt/sources.list.d/debian-tegra.list
+sudo apt update
+```
+
+The repository contains the kernel image, headers, nvmap, nvgpu, and device
+tree packages. It does not distribute CUDA userspace or firmware.
