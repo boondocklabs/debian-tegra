@@ -33,7 +33,14 @@ fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu.dtb" \
   -o "$dest/tegra210-p2371-2180-nvgpu-fan.dtb" \
   "$dest/tegra210-p2371-2180-fan.dtbo"
 test "$(fdtget -t x "$dest/tegra210-p2371-2180-nvgpu-fan.dtb" \
-  /pwm-fan cooling-levels)" = 'ff af 87 5f 1'
+  /pwm-fan cooling-levels)" = '0 50 78 a0 ff'
+dtc -@ -I dts -O dtb -o "$dest/tegra210-p2371-2180-ov5693.dtbo" \
+  /project/device-tree/tx1-ov5693.dtso
+fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan.dtb" \
+  -o "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
+  "$dest/tegra210-p2371-2180-ov5693.dtbo"
+test "$(fdtget -t s "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
+  /host1x@50000000/i2c@546c0000/camera@36 compatible)" = ovti,ov5693
 cat > "$stage/DEBIAN/control" <<EOF
 Package: $name
 Version: $DEBIAN_KERNEL_VERSION
@@ -42,8 +49,8 @@ Maintainer: debian-tegra <maintainers@example.invalid>
 Depends: linux-image-$DEBIAN_KERNEL_ABI (= $DEBIAN_KERNEL_VERSION)
 Section: kernel
 Priority: optional
-Description: TX1 GPU and fan device trees for Debian 13
- GPU-enabled P2371-2180 device tree and P2597 fan overlay for the pinned kernel.
+Description: TX1 GPU, fan, and OV5693 device trees for Debian 13
+ GPU-enabled P2371-2180 tree, P2597 fan, and optional OV5693 CSI overlay.
 EOF
 cat > "$stage/usr/share/doc/$name/README" <<EOF
 The GPU-enabled and fan-enabled DTBs are installed under

@@ -1,0 +1,108 @@
+--- a/drivers/hwmon/pwm-fan.c
++++ b/drivers/hwmon/pwm-fan.c
+@@ -12,6 +12,7 @@
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/property.h>
+ #include <linux/pwm.h>
+@@ -44,6 +45,7 @@
+ 	struct regulator *reg_en;
+ 	enum pwm_fan_enable_mode enable_mode;
+ 	bool regulator_enabled;
++	bool invert_duty;
+ 	bool enabled;
+ 
+ 	int tach_count;
+@@ -95,14 +97,14 @@
+ 	mod_timer(&ctx->rpm_timer, jiffies + HZ);
+ }
+ 
+-static void pwm_fan_enable_mode_2_state(int enable_mode,
++static void pwm_fan_enable_mode_2_state(struct pwm_fan_ctx *ctx,
+ 					struct pwm_state *state,
+ 					bool *enable_regulator)
+ {
+-	switch (enable_mode) {
++	switch (ctx->enable_mode) {
+ 	case pwm_disable_reg_enable:
+-		/* disable pwm, keep regulator enabled */
+-		state->enabled = false;
++		/* An active-low fan needs a driven high output when powered. */
++		state->enabled = ctx->invert_duty;
+ 		*enable_regulator = true;
+ 		break;
+ 	case pwm_enable_reg_enable:
+@@ -173,16 +175,19 @@
+ 	bool enable_regulator = false;
+ 	int ret;
+ 
+-	if (!ctx->enabled)
++	if (!ctx->enabled && !ctx->invert_duty)
+ 		return 0;
+ 
+-	pwm_fan_enable_mode_2_state(ctx->enable_mode,
++	pwm_fan_enable_mode_2_state(ctx,
+ 				    state,
+ 				    &enable_regulator);
+ 
+-	if (force_disable)
++	if (force_disable) {
+ 		state->enabled = false;
+-	state->duty_cycle = 0;
++		if (ctx->invert_duty)
++			enable_regulator = false;
++	}
++	state->duty_cycle = ctx->invert_duty ? state->period : 0;
+ 	ret = pwm_apply_might_sleep(ctx->pwm, state);
+ 	if (ret) {
+ 		dev_err(ctx->dev, "failed to disable PWM\n");
+@@ -209,6 +214,8 @@
+ 
+ 		period = state->period;
+ 		state->duty_cycle = DIV_ROUND_UP(pwm * (period - 1), MAX_PWM);
++		if (ctx->invert_duty)
++			state->duty_cycle = period - state->duty_cycle;
+ 		ret = pwm_apply_might_sleep(ctx->pwm, state);
+ 		if (ret)
+ 			return ret;
+@@ -275,8 +282,8 @@
+ 			struct pwm_state *state = &ctx->pwm_state;
+ 			bool enable_regulator = false;
+ 
+-			state->duty_cycle = 0;
+-			pwm_fan_enable_mode_2_state(val,
++			state->duty_cycle = ctx->invert_duty ? state->period : 0;
++			pwm_fan_enable_mode_2_state(ctx,
+ 						    state,
+ 						    &enable_regulator);
+ 
+@@ -497,6 +504,8 @@
+ 	mutex_init(&ctx->lock);
+ 
+ 	ctx->dev = &pdev->dev;
++	ctx->invert_duty = of_device_is_compatible(dev->of_node,
++						    "nvidia,p2597-pwm-fan");
+ 	ctx->pwm = devm_pwm_get(dev, NULL);
+ 	if (IS_ERR(ctx->pwm))
+ 		return dev_err_probe(dev, PTR_ERR(ctx->pwm), "Could not get PWM\n");
+@@ -531,7 +540,8 @@
+ 		return -EINVAL;
+ 	}
+ 
+-	ctx->enable_mode = pwm_disable_reg_enable;
++	ctx->enable_mode = ctx->invert_duty ? pwm_disable_reg_disable :
++					      pwm_disable_reg_enable;
+ 
+ 	/*
+ 	 * Set duty cycle to maximum allowed and enable PWM output as well as
+@@ -686,6 +696,7 @@
+ static DEFINE_SIMPLE_DEV_PM_OPS(pwm_fan_pm, pwm_fan_suspend, pwm_fan_resume);
+ 
+ static const struct of_device_id of_pwm_fan_match[] = {
++	{ .compatible = "nvidia,p2597-pwm-fan", },
+ 	{ .compatible = "pwm-fan", },
+ 	{},
+ };

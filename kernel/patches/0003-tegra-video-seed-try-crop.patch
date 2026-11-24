@@ -1,0 +1,51 @@
+--- a/drivers/staging/media/tegra-video/vi.c
++++ b/drivers/staging/media/tegra-video/vi.c
+@@ -471,30 +471,28 @@
+ 	v4l2_fill_mbus_format(&fmt.format, pix, fmtinfo->code);
+ 
+ 	/*
+-	 * Attempt to obtain the format size from subdev.
+-	 * If not available, try to get crop boundary from subdev.
++	 * Start format negotiation from the sensor's active crop. Some
++	 * sensors derive their enumerated sizes from the try crop, which
++	 * is empty in a newly allocated state.
+ 	 */
+ 	try_crop = v4l2_subdev_state_get_crop(sd_state, 0);
+-	fse.code = fmtinfo->code;
+-	ret = v4l2_subdev_call(subdev, pad, enum_frame_size, sd_state, &fse);
+-	if (ret) {
+-		if (!v4l2_subdev_has_op(subdev, pad, get_selection)) {
+-			try_crop->width = 0;
+-			try_crop->height = 0;
+-		} else {
+-			ret = v4l2_subdev_call(subdev, pad, get_selection,
+-					       NULL, &sdsel);
+-			if (ret) {
+-				ret = -EINVAL;
++	sdsel.target = V4L2_SEL_TGT_CROP;
++	ret = v4l2_subdev_call(subdev, pad, get_selection, NULL, &sdsel);
++	if (!ret) {
++		*try_crop = sdsel.r;
++	} else {
++		fse.code = fmtinfo->code;
++		ret = v4l2_subdev_call(subdev, pad, enum_frame_size, sd_state, &fse);
++		if (!ret) {
++			try_crop->width = fse.max_width;
++			try_crop->height = fse.max_height;
++		} else if (v4l2_subdev_has_op(subdev, pad, get_selection)) {
++			sdsel.target = V4L2_SEL_TGT_CROP_BOUNDS;
++			ret = v4l2_subdev_call(subdev, pad, get_selection, NULL, &sdsel);
++			if (ret)
+ 				goto out_free;
+-			}
+-
+-			try_crop->width = sdsel.r.width;
+-			try_crop->height = sdsel.r.height;
++			*try_crop = sdsel.r;
+ 		}
+-	} else {
+-		try_crop->width = fse.max_width;
+-		try_crop->height = fse.max_height;
+ 	}
+ 
+ 	ret = v4l2_subdev_call(subdev, pad, set_fmt, sd_state, &fmt);

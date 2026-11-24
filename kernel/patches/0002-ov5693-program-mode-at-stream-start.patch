@@ -1,0 +1,62 @@
+--- a/drivers/media/i2c/ov5693.c
++++ b/drivers/media/i2c/ov5693.c
+@@ -709,27 +709,8 @@
+ {
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+ 	struct ov5693_device *ov5693 = to_ov5693_sensor(sd);
+-	int ret;
+-
+-	mutex_lock(&ov5693->lock);
+-
+-	ret = ov5693_sensor_powerup(ov5693);
+-	if (ret)
+-		goto out_unlock;
+-
+-	ret = ov5693_sensor_init(ov5693);
+-	if (ret) {
+-		dev_err(dev, "ov5693 sensor init failure\n");
+-		goto err_power;
+-	}
+-
+-	goto out_unlock;
+-
+-err_power:
+-	ov5693_sensor_powerdown(ov5693);
+-out_unlock:
+-	mutex_unlock(&ov5693->lock);
+-	return ret;
++
++	return ov5693_sensor_powerup(ov5693);
+ }
+ 
+ static int ov5693_detect(struct ov5693_device *ov5693)
+@@ -976,7 +957,10 @@
+ 			return ret;
+ 
+ 		mutex_lock(&ov5693->lock);
+-		ret = __v4l2_ctrl_handler_setup(&ov5693->ctrls.handler);
++		/* Apply the selected mode even if runtime PM kept the sensor on. */
++		ret = ov5693_sensor_init(ov5693);
++		if (!ret)
++			ret = __v4l2_ctrl_handler_setup(&ov5693->ctrls.handler);
+ 		if (ret) {
+ 			mutex_unlock(&ov5693->lock);
+ 			goto err_power_down;
+@@ -997,7 +981,7 @@
+ 
+ 	return 0;
+ err_power_down:
+-	pm_runtime_put_noidle(ov5693->dev);
++	pm_runtime_put(ov5693->dev);
+ 	return ret;
+ }
+ 
+@@ -1322,6 +1306,8 @@
+ 
+ 	ov5693->mode.crop = ov5693_default_crop;
+ 	ov5693->mode.format = ov5693_default_fmt;
++	ov5693->mode.inc_x_odd = 1;
++	ov5693->mode.inc_y_odd = 1;
+ 	ov5693->mode.vts = __ov5693_calc_vts(ov5693->mode.format.height);
+ 
+ 	ret = ov5693_init_controls(ov5693);

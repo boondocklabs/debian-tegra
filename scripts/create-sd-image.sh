@@ -15,6 +15,7 @@ Options:
   --wifi-hidden            Connect to an SSID that does not broadcast
   --root-password          Prompt for a local root password
   --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
+  --local-packages DIR    Install the five locally built TX1 .deb files
   --no-firmware           Skip firmware and default to the safe boot entry
   --no-cuda               Skip R36.5.1 CUDA driver and CUDA 12.6 toolkit
   --output NAME           Image filename under out/ (default: debian-tegra-tx1-sd.img)
@@ -25,7 +26,7 @@ EOF
 }
 
 if [[ ${1:-} != --container ]]; then
-  authorized_keys= firmware_dir= wifi_ssid= wifi_password_file=
+  authorized_keys= firmware_dir= local_packages= wifi_ssid= wifi_password_file=
   output=debian-tegra-tx1-sd.img size_mib=8192 hostname=jetson-tx1
   force=0 no_firmware=0 no_cuda=0 wifi_hidden=0 root_password_enabled=0
   wifi_temp_file= root_temp_file=
@@ -66,6 +67,7 @@ if [[ ${1:-} != --container ]]; then
       --wifi-hidden) wifi_hidden=1; shift ;;
       --root-password) root_password_enabled=1; shift ;;
       --firmware-dir) firmware_dir=${2:?missing firmware directory}; shift 2 ;;
+      --local-packages) local_packages=${2:?missing package directory}; shift 2 ;;
       --no-firmware) no_firmware=1; shift ;;
       --no-cuda) no_cuda=1; shift ;;
       --output) output=${2:?missing image name}; shift 2 ;;
@@ -136,9 +138,16 @@ if [[ ${1:-} != --container ]]; then
     }
   fi
   authorized_keys=$(realpath "$authorized_keys")
+  if [[ -n $local_packages ]]; then
+    [[ -d $local_packages ]] || { echo 'Missing --local-packages directory' >&2; exit 2; }
+    local_packages=$(realpath "$local_packages")
+  fi
   mounts=(--mount "type=bind,source=$(pwd),target=/project"
           --mount "type=bind,source=$authorized_keys,target=/input/authorized_keys,readonly"
           --mount type=volume,target=/build)
+  if [[ -n $local_packages ]]; then
+    mounts+=(--mount "type=bind,source=$local_packages,target=/input/packages,readonly")
+  fi
   if [[ -n $wifi_ssid ]]; then
     mounts+=(--mount "type=bind,source=$wifi_password_file,target=/input/wifi_password,readonly")
   fi
@@ -234,7 +243,7 @@ part_size_mib=$((IMAGE_SIZE_MIB - 2))
 
 mkdir -p "$root" /project/out
 debootstrap --arch=arm64 --variant=minbase \
-  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,wpasupplicant,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,cloud-guest-utils,fdisk,zstd,gzip,curl,git,python3-pip,python3-setuptools,python3-wheel,locales \
+  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,wpasupplicant,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,cloud-guest-utils,fdisk,zstd,gzip,curl,git,python3-pip,python3-setuptools,python3-wheel,locales,usbutils,bluez,rfkill \
   trixie "$root" https://deb.debian.org/debian
 sed -i 's/^# *\(en_CA.UTF-8 UTF-8\)$/\1/' "$root/etc/locale.gen"
 chroot "$root" locale-gen en_CA.UTF-8
@@ -284,13 +293,41 @@ cleanup_mounts() {
 trap cleanup_mounts EXIT
 
 chroot "$root" apt-get update -o APT::Update::Error-Mode=any
-chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  --no-install-recommends \
-  "linux-image-$DEBIAN_KERNEL_ABI=$DEBIAN_KERNEL_VERSION" \
-  "linux-headers-$DEBIAN_KERNEL_ABI=$DEBIAN_KERNEL_VERSION" \
-  "$NVMAP_PACKAGE_NAME=$NVMAP_PACKAGE_VERSION" \
-  "$NVGPU_PACKAGE_NAME=$NVGPU_PACKAGE_VERSION" \
-  "debian-tegra-tx1-device-tree=$DEBIAN_KERNEL_VERSION"
+if [[ -d /input/packages ]]; then
+  package_names=(
+    "linux-image-$DEBIAN_KERNEL_ABI"
+    "linux-headers-$DEBIAN_KERNEL_ABI"
+    "$NVMAP_PACKAGE_NAME"
+    "$NVGPU_PACKAGE_NAME"
+    debian-tegra-tx1-device-tree
+  )
+  package_versions=(
+    "$DEBIAN_KERNEL_VERSION" "$DEBIAN_KERNEL_VERSION"
+    "$NVMAP_PACKAGE_VERSION" "$NVGPU_PACKAGE_VERSION"
+    "$DEBIAN_KERNEL_VERSION"
+  )
+  install -d "$root/tmp/kernel-packages"
+  package_paths=()
+  for i in "${!package_names[@]}"; do
+    package=${package_names[$i]}_${package_versions[$i]}_arm64.deb
+    test -s "/input/packages/$package" || {
+      echo "Missing local kernel package: $package" >&2; exit 1;
+    }
+    install -m 644 "/input/packages/$package" "$root/tmp/kernel-packages/$package"
+    package_paths+=("/tmp/kernel-packages/$package")
+  done
+  chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends "${package_paths[@]}"
+  rm -rf "$root/tmp/kernel-packages"
+else
+  chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends \
+    "linux-image-$DEBIAN_KERNEL_ABI=$DEBIAN_KERNEL_VERSION" \
+    "linux-headers-$DEBIAN_KERNEL_ABI=$DEBIAN_KERNEL_VERSION" \
+    "$NVMAP_PACKAGE_NAME=$NVMAP_PACKAGE_VERSION" \
+    "$NVGPU_PACKAGE_NAME=$NVGPU_PACKAGE_VERSION" \
+    "debian-tegra-tx1-device-tree=$DEBIAN_KERNEL_VERSION"
+fi
 
 if [[ -f /input/cuda-driver.deb && -f /input/cuda-core.deb &&
       -f /input/cuda-3d-core.deb && -f /input/cuda-cublas-compat.deb &&
@@ -374,7 +411,8 @@ if [[ -f /input/bsp.tbz2 ]]; then
   mkdir -p /build/nvidia-firmware
   tar -xjf /build/nvidia_drivers.tbz2 -C /build/nvidia-firmware \
     lib/firmware/tegra21x lib/firmware/brcm \
-    lib/firmware/tegra21x_xusb_firmware
+    lib/firmware/tegra21x_xusb_firmware \
+    lib/firmware/bcm4354.hcd
   firmware_source=/build/nvidia-firmware/lib/firmware
   install -d "$root/usr/share/doc/debian-tegra-tx1-firmware"
   tar -xOf /input/bsp.tbz2 Linux_for_Tegra/nv_tegra/LICENSE \
@@ -390,15 +428,41 @@ if [[ -n $firmware_source ]]; then
     "$root/usr/lib/firmware/nvidia/gm20b"
   cp -aL "$firmware_source/tegra21x/." "$root/usr/lib/firmware/tegra21x/"
   cp -aL "$firmware_source/tegra21x/." "$root/usr/lib/firmware/nvidia/gm20b/"
+  # Mainline Tegra DRM requests these names rather than the L4T names.
+  # Keep the BSP as local build input; do not package or publish firmware.
+  install -d "$root/usr/lib/firmware/nvidia/tegra210"
+  while read -r bsp_name mainline_name; do
+    [[ -s $firmware_source/tegra21x/$bsp_name ]] || {
+      echo "NVIDIA BSP is missing TX1 $mainline_name firmware" >&2; exit 1
+    }
+    install -m 644 "$firmware_source/tegra21x/$bsp_name" \
+      "$root/usr/lib/firmware/nvidia/tegra210/$mainline_name"
+  done <<'TEGRA210_MULTIMEDIA_FIRMWARE'
+vic04_ucode.bin vic04_ucode.bin
+nvhost_nvdec020_ns.fw nvdec.bin
+nvhost_nvenc050.fw nvenc.bin
+nvhost_nvjpg010.fw nvjpg.bin
+TEGRA210_MULTIMEDIA_FIRMWARE
+  [[ -s $firmware_source/bcm4354.hcd ]] || {
+    echo 'NVIDIA BSP is missing TX1 Bluetooth firmware' >&2; exit 1
+  }
+  install -d "$root/usr/lib/firmware/brcm"
+  install -m 644 "$firmware_source/bcm4354.hcd" \
+    "$root/usr/lib/firmware/brcm/BCM4354.hcd"
+  ln -sfn BCM4354.hcd \
+    "$root/usr/lib/firmware/brcm/BCM4354.nvidia,p2371-2180.hcd"
   if [[ -s $firmware_source/tegra21x_xusb_firmware ]]; then
     install -m 644 "$firmware_source/tegra21x_xusb_firmware" \
       "$root/usr/lib/firmware/tegra21x_xusb_firmware"
+    install -m 644 "$firmware_source/tegra21x_xusb_firmware" \
+      "$root/usr/lib/firmware/nvidia/tegra210/xusb.bin"
     install -d "$root/etc/initramfs-tools/hooks"
     cat > "$root/etc/initramfs-tools/hooks/tegra-xusb" <<'EOF'
 #!/bin/sh
 case "$1" in prereqs) exit 0;; esac
 . /usr/share/initramfs-tools/hook-functions
 copy_file firmware /lib/firmware/tegra21x_xusb_firmware
+copy_file firmware /lib/firmware/nvidia/tegra210/xusb.bin
 EOF
     chmod 755 "$root/etc/initramfs-tools/hooks/tegra-xusb"
   fi
@@ -440,6 +504,9 @@ gzip -dc "$root/boot/vmlinuz-$DEBIAN_KERNEL_ABI" \
 install -m 644 \
   "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan.dtb" \
   "$root/boot/tegra210-p2371-2180-nvgpu-fan.dtb"
+install -m 644 \
+  "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
+  "$root/boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb"
 
 # Keep U-Boot's boot files synchronized when APT upgrades packages within
 # this ABI. A new ABI still needs a new extlinux entry.
@@ -458,6 +525,10 @@ trap - EXIT
 dtb="/usr/lib/linux-image-\$abi/nvidia/tegra210-p2371-2180-nvgpu-fan.dtb"
 test -f "\$dtb" || exit 0
 cp -f "\$dtb" /boot/tegra210-p2371-2180-nvgpu-fan.dtb
+camera_dtb="/usr/lib/linux-image-\$abi/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb"
+if test -f "\$camera_dtb"; then
+  cp -f "\$camera_dtb" /boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
+fi
 EOF
 chmod 755 "$root/usr/local/sbin/debian-tegra-refresh-sd-boot"
 cat > "$root/etc/apt/apt.conf.d/99debian-tegra-sd-boot" <<'EOF'
@@ -615,7 +686,7 @@ cat > "$root/etc/modules-load.d/debian-tegra-nvmap.conf" <<'EOF'
 nvmap
 EOF
 chroot "$root" systemctl enable NetworkManager wpa_supplicant avahi-daemon ssh ssh-host-keys debian-tegra-grow-root jtop \
-  systemd-timesyncd serial-getty@ttyS0
+  systemd-timesyncd bluetooth serial-getty@ttyS0
 chroot "$root" systemctl set-default multi-user.target
 rm -f "$root/etc/ssh/ssh_host_"* "$root/usr/sbin/policy-rc.d"
 : > "$root/etc/machine-id"
@@ -635,14 +706,21 @@ LABEL debian-tegra-gpu
     LINUX /boot/Image-$DEBIAN_KERNEL_ABI
     INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
     FDT /boot/tegra210-p2371-2180-nvgpu-fan.dtb
-    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=nouveau oops=panic panic=10 console=ttyS0,115200n8
+    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 oops=panic panic=10 console=tty0 console=ttyS0,115200n8
+
+LABEL debian-tegra-ov5693
+    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (GPU + OV5693 camera)
+    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
+    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
+    FDT /boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
+    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 oops=panic panic=10 console=tty0 console=ttyS0,115200n8
 
 LABEL debian-tegra-safe
     MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (manual GPU load)
     LINUX /boot/Image-$DEBIAN_KERNEL_ABI
     INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
     FDT /boot/tegra210-p2371-2180-nvgpu-fan.dtb
-    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=nvgpu,nouveau oops=panic panic=10 console=ttyS0,115200n8
+    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=nvgpu oops=panic panic=10 console=tty0 console=ttyS0,115200n8
 EOF
 
 umount -R "$root/dev"

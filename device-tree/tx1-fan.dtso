@@ -20,14 +20,11 @@
 			};
 
 			fan: pwm-fan {
-				compatible = "pwm-fan";
+				compatible = "nvidia,p2597-pwm-fan";
 				pwms = <&pwm 3 45334>;
 				fan-supply = <&vdd_fan>;
-				/* P2597 fan input is active low. The Tegra PWM driver
-				 * supports normal polarity only, so cooling duty descends.
-				 * Keep the final duty nonzero to hold PWM output enabled.
-				 */
-				cooling-levels = <255 175 135 95 1>;
+				/* Logical fan duty, from off to full speed. */
+				cooling-levels = <0 80 120 160 255>;
 				#cooling-cells = <2>;
 			};
 		};

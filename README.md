@@ -23,15 +23,43 @@ these hardware tests.
 | `linux-headers-6.12.118-tegra-tx1` | Matching headers for external modules |
 | `debian-tegra-nvmap-tx1` | Patched NVIDIA nvmap module |
 | `debian-tegra-nvgpu-tx1` | Patched NVIDIA nvgpu module for GM20B |
-| `debian-tegra-tx1-device-tree` | GPU-enabled DTB and P2597 fan overlay/DTB |
+| `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI overlay |
 
 The kernel comes from Debian's `6.12.118-1` source package. Its URL and
 SHA-256 are pinned in [build-kernel.sh](scripts/build-kernel.sh). The
 [module source commits](modules/sources.env), [kernel config](kernel/tx1-arm64.config),
 [kernel patch](kernel/patches/0001-tegra210-gpu-dma-domain.patch),
-[module patches](modules), and [fan overlay](device-tree/tx1-fan.dtso) are
-checked in. The kernel ABI is `6.12.118-tegra-tx1`; the module and device tree
-packages depend on that exact kernel version.
+[module patches](modules), [fan overlay](device-tree/tx1-fan.dtso), and
+[OV5693 overlay](device-tree/tx1-ov5693.dtso) are checked in. The kernel ABI
+is `6.12.118-tegra-tx1`; the module and device tree packages depend on that
+exact kernel version.
+
+The compact TX1 config removes Nouveau, other unused SoC families, DVB/radio, and legacy
+network and USB serial drivers while retaining KVM/virtio and common USB and
+PCIe storage, network, audio, and input support as modules. USB UVC, Tegra
+VI, and OV5693/IMX219 camera sensor drivers remain modules. The device tree
+package includes an optional OV5693 overlay for the P2597 front camera; its
+boot menu entry selects that DTB while the default keeps camera probing off.
+Tegra `host1x`, DRM display, I2C, and display regulators are built in so the HDMI
+framebuffer console can appear during kernel initialization. NVIDIA `nvgpu`
+and `nvmap` remain separate upgradeable module packages; early display does
+not require the compute GPU driver. The build uses `-mtune=cortex-a57` and
+package revision `6.12.118-1+tegra2`. The kernel, HDMI DRM connector,
+GPU modules, XUSB, Wi-Fi, and Bluetooth have booted on the TX1 developer kit.
+The OV5693 boot entry exposes the E3326 sensor through V4L2 as 10-bit
+Bayer (`BG10`). The two tested capture sizes are 2592×1944 and 1296×972.
+
+The Jetson Linux R32.7.6 driver enables the analog and I/O supplies, drives
+PS7 high, waits about 2 ms, drives PS4 high to release reset, and waits about
+2 ms again. Linux 6.12 uses logical GPIO assertion and deassertion. Both
+signals are active low in the TX1 overlay so the sensor runs with both pins
+high. The overlay also selects the CSI-C calibration pad and VI input 2.
+The kernel patches initialize the V4L2 format negotiation crop from the
+active sensor crop and program the selected sensor mode on each stream start.
+
+The P2597 fan driver inverts the active-low PWM output. The DTB, thermal
+controller, and hwmon retain a 0–255 duty scale so jtop reports 0% for off
+and 100% for full speed. Zero duty turns off the fan supply by default.
 
 ## Build
 
@@ -64,6 +92,10 @@ version-pinned packages from the signed APT repository:
 ```sh
 bash scripts/create-sd-image.sh --authorized-keys ~/.ssh/id_ed25519.pub
 ```
+
+To test newly built packages before repository publication, run
+`bash scripts/build-all.sh` and pass `--local-packages out` to the image
+builder. The image still gets Debian base packages from Debian's mirror.
 
 The output is `out/debian-tegra-tx1-sd.img` with a SHA-256 file beside it. Use
 `--size-mib` for a larger card, `--output` for another filename, and `--force`
@@ -109,7 +141,7 @@ diskutil eject /dev/diskN
 
 The image has one GPT ext4 partition containing `/boot/extlinux/extlinux.conf`,
 the packaged kernel and modules, an initramfs with TX1 SD/PMIC drivers, and
-the GPU/fan device tree. On first boot, a service expands the root partition
+the GPU/fan device tree plus an optional OV5693 camera boot entry. On first boot, a service expands the root partition
 and ext4 filesystem to fill the SD card. It has **no bootloader**: the TX1's
 eMMC U-Boot must
 try SD (`mmc1`) before eMMC (`mmc0`). The tested developer kit does this. If
@@ -122,8 +154,11 @@ requires the options above.
 
 By default, the builder downloads NVIDIA's Jetson Linux R32.7.6 TX1 BSP and
 Debian's `firmware-brcm80211` package, checks their pinned SHA-256 hashes,
-and extracts the GM20B GPU, BCM4354 Wi-Fi, XUSB, and BCM4354 channel firmware
-into the image. The GPU-enabled boot entry is the default;
+and extracts the GM20B GPU, BCM4354 Wi-Fi and Bluetooth, and Tegra210
+XUSB/VIC/NVDEC/NVENC/NVJPG firmware into the image. The image includes
+`lsusb`, BlueZ (`bluetoothctl`), and `rfkill`. The multimedia and XUSB files
+are installed under the filenames requested by the mainline kernel. The
+GPU-enabled boot entry is the default;
 the menu also offers a safe entry that keeps `nvgpu` unloaded. Use
 `--firmware-dir DIR` to supply a local firmware tree instead, or
 `--no-firmware` to skip firmware and default to the safe entry. Downloads stay

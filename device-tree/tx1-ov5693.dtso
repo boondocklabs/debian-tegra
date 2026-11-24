@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+/plugin/;
+
+/* P2597 front OV5693 (E3326): VI input 2, CSI-C two-lane input,
+ * camera I2C at 0x546c0000, reset PS4 and powerdown PS7. The 2.8 V,
+ * 1.8 V and 1.2 V rails are already defined in tegra210-p2597.dtsi.
+ */
+/ {
+	fragment@0 {
+		target-path = "/host1x@50000000/vi@54080000";
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			status = "okay";
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				port@2 {
+					reg = <2>;
+					ov5693_vi_in: endpoint {
+						remote-endpoint = <&ov5693_csi_out>;
+					};
+				};
+			};
+			csi@838 {
+				reg = <0x838 0x1300>;
+				status = "okay";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				channel@2 {
+					reg = <2>;
+					nvidia,mipi-calibrate = <&mipi 0x4>; /* CSI-C */
+					ports {
+						#address-cells = <1>;
+						#size-cells = <0>;
+						port@0 {
+							reg = <0>;
+							ov5693_csi_in: endpoint {
+								data-lanes = <1 2>;
+								remote-endpoint = <&ov5693_out>;
+							};
+						};
+						port@1 {
+							reg = <1>;
+							ov5693_csi_out: endpoint {
+								remote-endpoint = <&ov5693_vi_in>;
+							};
+						};
+					};
+				};
+			};
+		};
+	};
+	fragment@1 {
+		target-path = "/host1x@50000000/i2c@546c0000";
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+			camera@36 {
+				compatible = "ovti,ov5693";
+				reg = <0x36>;
+				clocks = <&tegra_pmc 2>; /* TEGRA_PMC_CLK_OUT_3 */
+				clock-names = "xvclk";
+				assigned-clocks = <&tegra_pmc 2>;
+				assigned-clock-parents = <&tegra_car 122>; /* EXTERN3 */
+				assigned-clock-rates = <19200000>;
+				avdd-supply = <&vdd_cam_2v8>;
+				dovdd-supply = <&vdd_cam_1v8>;
+				dvdd-supply = <&vdd_cam_1v2>;
+				reset-gpios = <&gpio 148 1>; /* PS4, active low */
+				powerdown-gpios = <&gpio 151 1>; /* PS7: BSP drives high to run */
+				port {
+					ov5693_out: endpoint {
+						data-lanes = <1 2>;
+						link-frequencies = /bits/ 64 <419200000>;
+						remote-endpoint = <&ov5693_csi_in>;
+					};
+				};
+			};
+		};
+	};
+};

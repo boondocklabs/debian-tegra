@@ -1,0 +1,27 @@
+--- a/drivers/staging/media/tegra-video/tegra210.c
++++ b/drivers/staging/media/tegra-video/tegra210.c
+@@ -487,8 +487,10 @@
+ 	}
+ 
+ 	if (capture_timedout) {
+-		dev_err_ratelimited(&chan->video.dev,
+-				    "frame start syncpt timeout: %d\n", err);
++		/* STREAMOFF can interrupt a pending wait when stopping this thread. */
++		if (err != -ERESTARTSYS || !kthread_should_stop())
++			dev_err_ratelimited(&chan->video.dev,
++					    "frame start syncpt wait failed: %d\n", err);
+ 		release_buffer(chan, buf, VB2_BUF_STATE_ERROR);
+ 		return err;
+ 	}
+@@ -529,9 +531,9 @@
+ 		}
+ 	}
+ 
+-	if (capture_timedout)
++	if (capture_timedout && (ret != -ERESTARTSYS || !kthread_should_stop()))
+ 		dev_err_ratelimited(&chan->video.dev,
+-				    "MW_ACK_DONE syncpt timeout: %d\n", ret);
++				    "MW_ACK_DONE syncpt wait failed: %d\n", ret);
+ 	release_buffer(chan, buf, state);
+ }
+ 
