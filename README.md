@@ -47,6 +47,9 @@ and headers together, then runs nvmap, nvgpu, and device tree jobs separately.
 It uploads both individual job artifacts and a combined five-package artifact.
 The kernel source is compiled in a case-sensitive Docker volume so the local
 build also works from a macOS checkout.
+Pushes and pull requests run this build only when build inputs or the build
+workflow change. README and APT publishing changes do not rebuild packages;
+the build can still be started manually from GitHub Actions.
 
 The device tree package installs files under
 `/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/`. Select the GPU or GPU/fan

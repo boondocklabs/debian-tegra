@@ -3,7 +3,21 @@ name: Build TX1 Debian packages
 on:
   push:
     branches: [main]
+    paths:
+      - .github/workflows/build.yml
+      - Containerfile
+      - kernel/**
+      - modules/**
+      - device-tree/**
+      - scripts/build-*.sh
   pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - Containerfile
+      - kernel/**
+      - modules/**
+      - device-tree/**
+      - scripts/build-*.sh
   workflow_dispatch:
 
 permissions:
