@@ -180,10 +180,19 @@ if [[ ${1:-} != --container ]]; then
     cuda_driver=cache/nvidia-l4t-cuda_36.5.1-20260427132545_arm64.deb
     cuda_driver_url=https://repo.download.nvidia.com/jetson/t234/pool/main/n/nvidia-l4t-cuda/$(basename "$cuda_driver")
     cuda_driver_sha256=e2cba2ecb98de3cc4f3386acd93c9b66a6ce4c2894cab65367c743ece309c482
+    cuda_core=cache/nvidia-l4t-core_36.5.1-20260427132545_arm64.deb
+    cuda_core_url=https://repo.download.nvidia.com/jetson/t234/pool/main/n/nvidia-l4t-core/$(basename "$cuda_core")
+    cuda_core_sha256=65c80584ec45ce42693207c07765ec771a7308e0df3917128c132d7c478eec23
+    cuda_3d_core=cache/nvidia-l4t-3d-core_36.5.1-20260427132545_arm64.deb
+    cuda_3d_core_url=https://repo.download.nvidia.com/jetson/t234/pool/main/n/nvidia-l4t-3d-core/$(basename "$cuda_3d_core")
+    cuda_3d_core_sha256=b979358efb685bd5377be55fa661d2614bc9a03232a06f48518944134649688a
+    cuda_cublas_compat=cache/libcublas-12-6_12.6.0.22-1_arm64.deb
+    cuda_cublas_compat_url=https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/$(basename "$cuda_cublas_compat")
+    cuda_cublas_compat_sha256=d1db10ccd5f6bcbd953084d7a92841e43f96f52c57da7a2c87125b170808fdab
     cuda_keyring=cache/cuda-ubuntu2204-keyring.gpg
     cuda_keyring_url=https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-ubuntu2204-keyring.gpg
     cuda_keyring_sha256=25100d6f2eccaee7d6719a70e3c0c6145064aa9edc2c32148f693ac4c524a376
-    for package in cuda_driver cuda_keyring; do
+    for package in cuda_driver cuda_core cuda_3d_core cuda_cublas_compat cuda_keyring; do
       path=${!package}
       url_var=${package}_url
       hash_var=${package}_sha256
@@ -197,6 +206,9 @@ if [[ ${1:-} != --container ]]; then
       }
     done
     mounts+=(--mount "type=bind,source=$(pwd)/$cuda_driver,target=/input/cuda-driver.deb,readonly"
+             --mount "type=bind,source=$(pwd)/$cuda_core,target=/input/cuda-core.deb,readonly"
+             --mount "type=bind,source=$(pwd)/$cuda_3d_core,target=/input/cuda-3d-core.deb,readonly"
+             --mount "type=bind,source=$(pwd)/$cuda_cublas_compat,target=/input/cuda-cublas-compat.deb,readonly"
              --mount "type=bind,source=$(pwd)/$cuda_keyring,target=/input/cuda-keyring.gpg,readonly")
   fi
   docker build --platform linux/arm64 -f Containerfile.sd -t debian-tegra-sd-builder .
@@ -222,8 +234,11 @@ part_size_mib=$((IMAGE_SIZE_MIB - 2))
 
 mkdir -p "$root" /project/out
 debootstrap --arch=arm64 --variant=minbase \
-  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,wpasupplicant,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd,gzip \
+  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,wpasupplicant,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,cloud-guest-utils,fdisk,zstd,gzip,curl,git,python3-pip,python3-setuptools,python3-wheel,locales \
   trixie "$root" https://deb.debian.org/debian
+sed -i 's/^# *\(en_CA.UTF-8 UTF-8\)$/\1/' "$root/etc/locale.gen"
+chroot "$root" locale-gen en_CA.UTF-8
+chroot "$root" locale -a | grep -Fx 'en_CA.utf8'
 
 install -d "$root/usr/share/keyrings" "$root/etc/apt/sources.list.d"
 curl --fail --silent --show-error --location --retry 3 \
@@ -277,11 +292,18 @@ chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   "$NVGPU_PACKAGE_NAME=$NVGPU_PACKAGE_VERSION" \
   "debian-tegra-tx1-device-tree=$DEBIAN_KERNEL_VERSION"
 
-if [[ -f /input/cuda-driver.deb && -f /input/cuda-keyring.gpg ]]; then
+if [[ -f /input/cuda-driver.deb && -f /input/cuda-core.deb &&
+      -f /input/cuda-3d-core.deb && -f /input/cuda-cublas-compat.deb &&
+      -f /input/cuda-keyring.gpg ]]; then
   cuda_driver_dir=$root/opt/debian-tegra/nvidia-r36.5.1
+  cuda_compat_dir=$root/opt/debian-tegra/cuda-12.6-compat
   mkdir -p "$cuda_driver_dir"
   dpkg-deb -x /input/cuda-driver.deb "$cuda_driver_dir"
+  dpkg-deb -x /input/cuda-core.deb "$cuda_driver_dir"
+  dpkg-deb -x /input/cuda-3d-core.deb "$cuda_driver_dir"
   test -s "$cuda_driver_dir/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1.1"
+  test -s "$cuda_driver_dir/usr/lib/aarch64-linux-gnu/nvidia/libnvrm_gpu.so"
+  test -s "$cuda_driver_dir/usr/lib/aarch64-linux-gnu/nvidia/libnvidia-ptxjitcompiler.so.1"
   install -m 644 /input/cuda-keyring.gpg \
     "$root/usr/share/keyrings/debian-tegra-cuda-build-keyring.gpg"
   cat > "$root/etc/apt/sources.list.d/debian-tegra-cuda-build.list" <<'EOF'
@@ -295,6 +317,9 @@ EOF
     -o APT::Update::Error-Mode=any
   chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     --no-install-recommends cuda-toolkit-12-6=12.6.3-1
+  mkdir -p "$cuda_compat_dir"
+  dpkg-deb -x /input/cuda-cublas-compat.deb "$cuda_compat_dir"
+  test -s "$cuda_compat_dir/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcublas.so.12"
   test -x "$root/usr/local/cuda-12.6/bin/nvcc"
   test -s "$root/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcudart.so.12"
   cat > "$root/usr/local/bin/nvcc" <<'EOF'
@@ -325,6 +350,9 @@ EOF
     /tmp/debian-tegra-cuda-smoke.cu -o /tmp/debian-tegra-cuda-smoke
   rm -f "$root/tmp/debian-tegra-cuda-smoke.cu" \
     "$root/tmp/debian-tegra-cuda-smoke"
+  cat > "$root/etc/ld.so.conf.d/00-debian-tegra-cuda-compat.conf" <<'EOF'
+/opt/debian-tegra/cuda-12.6-compat/usr/local/cuda-12.6/targets/aarch64-linux/lib
+EOF
   cat > "$root/etc/ld.so.conf.d/debian-tegra-cuda.conf" <<'EOF'
 /opt/debian-tegra/nvidia-r36.5.1/usr/lib/aarch64-linux-gnu/nvidia
 /usr/local/cuda-12.6/targets/aarch64-linux/lib
@@ -467,6 +495,17 @@ install -m 600 -o "$uid" -g "$gid" /input/authorized_keys \
   "$root/home/debian/.ssh/authorized_keys"
 echo 'debian ALL=(ALL:ALL) NOPASSWD: ALL' > "$root/etc/sudoers.d/debian"
 chmod 440 "$root/etc/sudoers.d/debian"
+chroot "$root" visudo -cf /etc/sudoers
+chroot "$root" su - debian -c 'sudo -n true'
+chroot "$root" env PIP_BREAK_SYSTEM_PACKAGES=1 PIP_NO_CACHE_DIR=1 \
+  python3 -m pip install --no-build-isolation \
+  'smbus2==0.6.1' 'distro==1.9.0' 'nvidia-ml-py==13.615.71' \
+  'git+https://github.com/rbonghi/jetson_stats.git@57c6f30dea2e887e6b2002ebe33b8acf16d3530a'
+chroot "$root" /usr/local/bin/jtop --version | grep -Fx 'jtop 7.3.0'
+chroot "$root" groupadd -f jtop
+chroot "$root" usermod -aG jtop debian
+install -m 644 "$root/usr/local/share/jetson_stats/jtop.service" \
+  "$root/etc/systemd/system/jtop.service"
 mkdir -p "$root/etc/ssh/sshd_config.d" "$root/etc/NetworkManager/system-connections"
 cat > "$root/etc/ssh/sshd_config.d/10-debian-tegra.conf" <<'EOF'
 PermitRootLogin no
@@ -548,6 +587,19 @@ ExecStart=/usr/bin/ssh-keygen -A
 [Install]
 WantedBy=multi-user.target
 EOF
+install -m 755 /project/scripts/grow-sd-root.sh \
+  "$root/usr/local/sbin/debian-tegra-grow-root"
+cat > "$root/etc/systemd/system/debian-tegra-grow-root.service" <<'EOF'
+[Unit]
+Description=Expand the TX1 SD root filesystem to card capacity
+After=local-fs.target
+ConditionPathExists=!/var/lib/debian-tegra/root-expanded
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/debian-tegra-grow-root
+[Install]
+WantedBy=multi-user.target
+EOF
 mkdir -p "$root/etc/systemd/system/ssh.service.d"
 cat > "$root/etc/systemd/system/ssh.service.d/host-keys.conf" <<'EOF'
 [Unit]
@@ -559,7 +611,10 @@ SUBSYSTEM=="misc", KERNEL=="nvmap", GROUP="video", MODE="0660"
 SUBSYSTEM=="nvidia-gpu", KERNEL=="nvhost-*", GROUP="video", MODE="0660"
 SUBSYSTEM=="nvidia-gpu-v2", GROUP="video", MODE="0660"
 EOF
-chroot "$root" systemctl enable NetworkManager wpa_supplicant avahi-daemon ssh ssh-host-keys \
+cat > "$root/etc/modules-load.d/debian-tegra-nvmap.conf" <<'EOF'
+nvmap
+EOF
+chroot "$root" systemctl enable NetworkManager wpa_supplicant avahi-daemon ssh ssh-host-keys debian-tegra-grow-root jtop \
   systemd-timesyncd serial-getty@ttyS0
 chroot "$root" systemctl set-default multi-user.target
 rm -f "$root/etc/ssh/ssh_host_"* "$root/usr/sbin/policy-rc.d"

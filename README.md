@@ -58,7 +58,7 @@ not change the bootloader.
 
 ## Bootable TX1 SD image
 
-With Docker on an ARM64 host, build a 4 GiB Debian 13 SD image using the five
+With Docker on an ARM64 host, build an 8 GiB Debian 13 SD image using the five
 version-pinned packages from the signed APT repository:
 
 ```sh
@@ -67,12 +67,15 @@ bash scripts/create-sd-image.sh --authorized-keys ~/.ssh/id_ed25519.pub
 
 The output is `out/debian-tegra-tx1-sd.img` with a SHA-256 file beside it. Use
 `--size-mib` for a larger card, `--output` for another filename, and `--force`
-to replace an existing output. Use an 8 GB or larger SD card for the default
-4 GiB image. The builder uses privileged Docker for its debootstrap chroot
+to replace an existing output. Use a 16 GB or larger SD card for the default
+8 GiB image. The builder uses privileged Docker for its debootstrap chroot
 mounts and verifies the APT signing key fingerprint before installing the
 packages. It creates a `debian` account with the supplied SSH key and
-passwordless sudo, enables wired DHCP, Avahi mDNS, and serial login, and
-generates unique SSH host keys on first boot.
+passwordless sudo, verifies that `debian` can run `sudo -n true`, installs
+`curl`, Python pip and setuptools, and jtop 7.3.0 from a pinned
+jetson_stats Git commit. It enables wired DHCP, Avahi mDNS, serial login,
+and the jtop service, generates the `en_CA.UTF-8` locale, and creates unique
+SSH host keys on first boot.
 
 To connect over WPA/WPA2 Wi-Fi, pass the SSID and enter the password at the
 terminal prompt:
@@ -106,7 +109,9 @@ diskutil eject /dev/diskN
 
 The image has one GPT ext4 partition containing `/boot/extlinux/extlinux.conf`,
 the packaged kernel and modules, an initramfs with TX1 SD/PMIC drivers, and
-the GPU/fan device tree. It has **no bootloader**: the TX1's eMMC U-Boot must
+the GPU/fan device tree. On first boot, a service expands the root partition
+and ext4 filesystem to fill the SD card. It has **no bootloader**: the TX1's
+eMMC U-Boot must
 try SD (`mmc1`) before eMMC (`mmc0`). The tested developer kit does this. If
 the SD kernel cannot boot, remove the card and reboot to use eMMC; there is no
 automatic boot-failure fallback. On a TX1 Developer Kit, U-Boot selected this
@@ -133,9 +138,13 @@ By default, the SD image builder installs NVIDIA's full ARM64 Jetson
 `cuda-toolkit-12-6` package set from NVIDIA's CUDA repository. This includes
 `nvcc`, headers, development tools, and the cuBLAS, cuFFT, cuRAND, cuSOLVER,
 cuSPARSE, and NVRTC libraries. It also downloads the R36.5.1
-`nvidia-l4t-cuda` package, verifies its pinned SHA-256 hash, and places its
-driver libraries under `/opt/debian-tegra/`. The toolkit packages are tracked
-by Debian's package database; the R36 driver library is extracted separately.
+`nvidia-l4t-cuda`, `nvidia-l4t-core`, and `nvidia-l4t-3d-core` packages,
+verifies their pinned SHA-256 hashes, and places their driver and PTX JIT
+libraries under `/opt/debian-tegra/`. The toolkit packages are tracked by
+Debian's package database; the R36 libraries are extracted separately.
+The builder also selects a verified cuBLAS 12.6.0.22 runtime from a local
+compatibility directory: the toolkit's newer cuBLAS 12.6.4.1 returned an
+architecture mismatch on the TX1. `nvmap` loads automatically at boot.
 The dynamic linker can find both `libcuda.so.1` and `libcudart.so.12`.
 `nvcc` is available on the default PATH. The builder installs GCC 13 for
 CUDA 12.6 and applies a four-declaration `noexcept` compatibility adjustment
@@ -151,10 +160,26 @@ build-time APT update. NVIDIA binaries stay in the ignored local cache or
 image; this repository, CI, and the debian-tegra APT repository do not
 redistribute them.
 
-The R36.5.1 driver and CUDA 12.6.77 runtime combination passed device
-enumeration, memory transfers, and a small kernel launch on a physical TX1.
-The full toolkit and its additional libraries have not yet been exercised on
-the TX1. cuDNN is a separate package and is not included.
+The R36.5.1 driver, CUDA 12.6 toolkit, and selected cuBLAS runtime passed
+CUDA, cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, and NVRTC probes on a
+physical TX1. cuDNN is a separate package and is not included.
+
+## CUDA hardware tests
+
+The test script uses the local SD image as a read-only ARM64 build root inside
+Docker, compiles an SM 5.3 probe on the host, copies it to the TX1, and runs
+the seven tests separately over SSH:
+
+```sh
+bash scripts/test-cuda.sh --target debian@jetson-tx1.local
+```
+
+Use `--image FILE` for another image, `--build-only` to compile without SSH,
+or `--known-hosts FILE` to select a verified SSH host-key file. Rebuilt images
+generate new SSH host keys on first boot, so verify a changed key on the serial
+console before updating your known-hosts entry. The probe results are printed
+individually and the script fails if any test fails. The NVIDIA driver may
+print a nonfatal missing `host1x-fence` message during these tests.
 
 ## APT repository
 
