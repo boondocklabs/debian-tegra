@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+/plugin/;
+
+&{/opp-table-emc} {
+	opp-1065600000 {
+		opp-hz = /bits/ 64 <1065600000>;
+	};
+
+	opp-1331200000 {
+		opp-hz = /bits/ 64 <1331200000>;
+	};
+
+	opp-1600000000 {
+		opp-hz = /bits/ 64 <1600000000>;
+	};
+};
+
+&emc {
+	nvidia,enable-emc-1600;
+};

@@ -508,6 +508,10 @@ install -m 644 \
   "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
   "$root/boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb"
 
+install -m 644 \
+  "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb" \
+  "$root/boot/tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb"
+
 # Keep U-Boot's boot files synchronized when APT upgrades packages within
 # this ABI. A new ABI still needs a new extlinux entry.
 cat > "$root/usr/local/sbin/debian-tegra-refresh-sd-boot" <<EOF
@@ -528,6 +532,11 @@ cp -f "\$dtb" /boot/tegra210-p2371-2180-nvgpu-fan.dtb
 camera_dtb="/usr/lib/linux-image-\$abi/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb"
 if test -f "\$camera_dtb"; then
   cp -f "\$camera_dtb" /boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
+fi
+emc_name=tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb
+emc_dtb="/usr/lib/linux-image-\$abi/nvidia/\$emc_name"
+if test -f "\$emc_dtb"; then
+  cp -f "\$emc_dtb" "/boot/\$emc_name"
 fi
 EOF
 chmod 755 "$root/usr/local/sbin/debian-tegra-refresh-sd-boot"
@@ -696,6 +705,10 @@ rm -f "$root/var/lib/systemd/random-seed"
 chroot "$root" apt-get clean
 
 mkdir -p "$root/boot/extlinux"
+emc_blacklist=tegra30_devfreq
+if [[ $gpu_default == debian-tegra-safe ]]; then
+  emc_blacklist=nvgpu,$emc_blacklist
+fi
 cat > "$root/boot/extlinux/extlinux.conf" <<EOF
 TIMEOUT 30
 DEFAULT $gpu_default
@@ -721,6 +734,13 @@ LABEL debian-tegra-safe
     INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
     FDT /boot/tegra210-p2371-2180-nvgpu-fan.dtb
     APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=nvgpu oops=panic panic=10 console=tty0 console=ttyS0,115200n8
+
+LABEL debian-tegra-emc-1600
+    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (ACTMON up to 1600 MHz)
+    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
+    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
+    FDT /boot/tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb
+    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=$emc_blacklist debian_tegra.emc_1600=1 oops=panic panic=10 console=tty0 console=ttyS0,115200n8
 EOF
 
 umount -R "$root/dev"

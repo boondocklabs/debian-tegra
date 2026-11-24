@@ -1,0 +1,12 @@
+[Unit]
+Description=Hardware watchdog for the TX1 1600 MHz EMC boot entry
+ConditionKernelCommandLine=debian_tegra.emc_1600=1
+ConditionPathExists=/sys/firmware/devicetree/base/external-memory-controller@7001b000/nvidia,enable-emc-1600
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/libexec/debian-tegra-emc-watchdog
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=15s

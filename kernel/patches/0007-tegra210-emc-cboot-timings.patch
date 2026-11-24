@@ -2,8 +2,8 @@ Subject: [PATCH] Load CBoot-trained Jetson TX1 EMC timings
 
 The P2180 CBoot DT contains timings trained for the installed LPDDR4 on
 each boot. Keep its DT reserved and read the RAM code 0 nominal and
-derated entries for 408, 665.6, and 800 MHz. Leave the reserved-memory
-table ABI in place for trees without a CBoot handoff.
+derated entries through 800 MHz, or through 1600 MHz on the opt-in DTB.
+Preserve the reserved-memory table ABI for trees without a CBoot handoff.
 
 Timing property mapping adapted from Aaron Kling’s Tegra210 DT parser.
 Link: https://lkml.indiana.edu/hypermail/linux/kernel/2505.1/00113.html
@@ -99,11 +99,15 @@ Link: https://lkml.indiana.edu/hypermail/linux/kernel/2505.1/00113.html
  	return 0;
  }
  
-@@ -1783,6 +1787,253 @@
+@@ -1783,6 +1787,260 @@
  		emc->num_channels = 1;
  }
  
-+static const u32 tx1_emc_rates[] = { 408000, 665600, 800000 };
++#define TX1_EMC_BASE_RATE_COUNT 3
++
++static const u32 tx1_emc_rates[] = {
++	408000, 665600, 800000, 1065600, 1331200, 1600000,
++};
 +
 +static int tegra210_emc_read_cboot_timing(struct tegra210_emc *emc,
 +					struct tegra210_emc_timing *timing,
@@ -255,7 +259,10 @@ Link: https://lkml.indiana.edu/hypermail/linux/kernel/2505.1/00113.html
 +	if (table < 0)
 +		return -ENOENT;
 +
-+	emc->num_timings = ARRAY_SIZE(tx1_emc_rates);
++	if (of_property_present(emc->dev->of_node, "nvidia,enable-emc-1600"))
++		emc->num_timings = ARRAY_SIZE(tx1_emc_rates);
++	else
++		emc->num_timings = TX1_EMC_BASE_RATE_COUNT;
 +	emc->nominal = devm_kcalloc(emc->dev, emc->num_timings, sizeof(*emc->nominal),
 +				    GFP_KERNEL);
 +	emc->derated = devm_kcalloc(emc->dev, emc->num_timings, sizeof(*emc->derated),
@@ -353,7 +360,7 @@ Link: https://lkml.indiana.edu/hypermail/linux/kernel/2505.1/00113.html
  static int tegra210_emc_validate_timings(struct tegra210_emc *emc,
  					 struct tegra210_emc_timing *timings,
  					 unsigned int num_timings)
-@@ -1846,17 +2097,18 @@
+@@ -1846,17 +2104,18 @@
  	tegra210_emc_detect(emc);
  	np = pdev->dev.of_node;
  
@@ -383,7 +390,7 @@ Link: https://lkml.indiana.edu/hypermail/linux/kernel/2505.1/00113.html
  	}
  
  	/* validate the tables */
-@@ -2007,7 +2259,8 @@
+@@ -2007,7 +2266,8 @@
  
  	emc->resume_rate = clk_get_rate(emc->clk);
  

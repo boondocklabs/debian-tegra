@@ -6,7 +6,7 @@ source_url=https://deb.debian.org/debian-security/pool/updates/main/l/linux/linu
 source_sha256=b75bb2e78a5c7762254e2af7685085c788a67eb342cb4092ad2a05eaf9fc33b7
 source_deb=cache/linux-source-6.12_6.12.118-1_all.deb
 kernel_abi=6.12.118-tegra-tx1
-package_version=6.12.118-1+tegra4
+package_version=6.12.118-1+tegra5
 
 if [[ ${1:-} == --container ]]; then
   mkdir -p /build/source-package /build/source /build/obj /project/out

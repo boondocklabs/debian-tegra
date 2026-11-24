@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+import array
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import time
+
+watchdog = next(
+    (device for device in Path("/sys/class/watchdog").glob("watchdog*")
+     if (device / "identity").read_text().strip() == "max77620-watchdog"),
+    None,
+)
+if watchdog is None:
+    raise SystemExit("MAX77620 hardware watchdog unavailable")
+
+descriptor = os.open(f"/dev/{watchdog.name}", os.O_WRONLY | os.O_CLOEXEC)
+timeout = array.array("i", [64])
+# WDIOC_SETTIMEOUT
+fcntl.ioctl(descriptor, 0xc0045706, timeout, True)
+os.write(descriptor, b"\0")
+if (watchdog / "state").read_text().strip() != "active":
+    raise SystemExit("MAX77620 hardware watchdog failed to arm")
+print(f"MAX77620 hardware watchdog armed for {timeout[0]} seconds", flush=True)
+subprocess.run(["/usr/bin/systemd-notify", "--ready"], check=True)
+
+while True:
+    time.sleep(3)
+    os.write(descriptor, b"\0")

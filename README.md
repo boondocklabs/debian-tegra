@@ -7,6 +7,20 @@ for GPU memory sharing and device trees that enable the GPU and the carrier's
 fan. The aim is to run a current Debian userspace and kernel with the TX1 GPU,
 including a path to CUDA 12 applications.
 
+## Supported hardware and software
+
+| Component | Supported or tested version |
+| --- | --- |
+| Board | NVIDIA Jetson TX1 Developer Kit, P2371-2180 module on the P2597 carrier |
+| CPU and GPU | ARM64 Cortex-A57 and Tegra210 GM20B (Maxwell, CUDA SM 5.3) |
+| Operating system | Debian 13 (Trixie), arm64 |
+| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra5` |
+| Boot firmware | Jetson Linux R32.7.6 CBoot and U-Boot 2020.04 on eMMC, with SD boot via extlinux |
+| Display and peripherals | HDMI DRM, P2597 PWM fan, BCM4354 Wi-Fi and Bluetooth, optional OV5693 CSI camera |
+| Memory scaling | RAM code 0, ACTMON at 408–800 MHz or up to 1,600 MHz on the watchdog-guarded entry |
+| GPU userspace | Experimental R36.5.1 `libcuda`, CUDA 12.6 toolkit, CUDA Runtime 12.6.77, cuBLAS 12.6.0.22 |
+| Optional libraries and monitoring | cuDNN 9.3.0 tested; jtop 7.3.0 included in the SD image |
+
 The port has been exercised on a TX1 with NVIDIA R36.5.1 `libcuda` and CUDA
 12.6.77 `libcudart`: the CUDA driver API enumerated the GM20B GPU, copied
 memory, JIT-loaded SM 5.3 PTX, launched a kernel, and read back its result.
@@ -44,7 +58,7 @@ Tegra `host1x`, DRM display, I2C, and display regulators are built in so the HDM
 framebuffer console can appear during kernel initialization. NVIDIA `nvgpu`
 and `nvmap` remain separate upgradeable module packages; early display does
 not require the compute GPU driver. The build uses `-mtune=cortex-a57` and
-package revision `6.12.118-1+tegra4`. The kernel, HDMI DRM connector,
+package revision `6.12.118-1+tegra5`. The kernel, HDMI DRM connector,
 GPU modules, XUSB, Wi-Fi, and Bluetooth have booted on the TX1 developer kit.
 The OV5693 boot entry exposes the E3326 sensor through V4L2 as 10-bit
 Bayer (`BG10`). The two tested capture sizes are 2592×1944 and 1296×972.
@@ -69,28 +83,33 @@ cooling state was raised.
 
 ## TX1 EMC and ACTMON
 
-The optional `tegra210-p2371-2180-nvgpu-fan-ov5693-emc.dtb` enables ACTMON
-scaling for RAM code 0 at 408, 665.6, and 800 MHz. It reads the nominal and
-derated LPDDR4 timings that NVIDIA CBoot trains on each boot. The DTB
-requires the P2371-2180 CBoot handoff at `0x83100000`.
+The SD boot menu includes **ACTMON up to 1600 MHz** as an opt-in entry.
+It uses the MAX77620 hardware watchdog with a 64-second timeout and loads
+ACTMON only after the watchdog arms and the 1,600 MHz timing is available.
+The existing GPU entry remains the image default when firmware is included.
 
-On one TX1 with RAM code 0, the packaged 408–800 MHz range passed all eight
-workloads in the 15-second suite and a 128 MiB RAM integrity test. A separate
-opt-in test kernel and DTB used six trained rates from 408 to 1,600 MHz.
-The higher rates of 1,065.6, 1,331.2, and 1,600 MHz each passed a 32 MiB RAM
-integrity test. All 1,314 EMC samples from the fixed-rate CUDA run measured
-1,600 MHz.
+Both EMC device trees require RAM code 0 and the P2371-2180 CBoot handoff
+at `0x83100000`. ACTMON uses LPDDR4 timings that CBoot trains on each boot.
+The `-emc.dtb` covers 408, 665.6, and 800 MHz. The `-emc-1600.dtb` adds
+1,065.6, 1,331.2, and 1,600 MHz.
 
-With automatic scaling on the higher-rate test entry, EMC reached 1,600 MHz
-in 150 of 153 samples during a 15-second CUDA copy and returned to 408 MHz
-about 1.5 seconds after the load ended. The 64-second MAX77620 hardware
-watchdog armed before ACTMON loaded, and the known-good OV5693 entry stayed
-the default throughout testing.
+The 408–800 MHz range passed the 15-second CUDA suite and a 128 MiB RAM
+integrity test on one TX1. Each higher rate passed a 32 MiB RAM test.
+All 1,314 samples during the fixed-rate benchmark measured 1,600 MHz.
+With automatic scaling, EMC reached 1,600 MHz in 150 of 153 samples during
+a 15-second CUDA copy and returned to 408 MHz about 1.5 seconds after load
+ended. The known-good OV5693 entry was the default on the test board.
 
-Copy the packaged EMC DTB from `/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/` to
-`/boot/`. Add a copy of the OV5693 entry in `/boot/extlinux/extlinux.conf`
-with a unique label and point its `FDT` line to the EMC DTB. Keep the original
-entry as the default while testing. After boot, use these commands to read
+For an existing installation, copy
+`tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb` from
+`/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/` to `/boot/`.
+Duplicate the known-good entry in `/boot/extlinux/extlinux.conf` with a
+unique label, point its `FDT` line to the new DTB, and append
+`debian_tegra.emc_1600=1 modprobe.blacklist=tegra30_devfreq` to that
+entry's `APPEND` line. If the line already has a module blacklist, add
+`tegra30_devfreq` to its comma-separated list. Keep the existing `DEFAULT`.
+
+After boot, use these commands to read
 the current EMC clock and ACTMON’s transition counters.
 
 ```sh
@@ -262,8 +281,8 @@ bash scripts/test-cuda.sh --benchmark --seconds 15 --target debian@jetson-tx1.lo
 The table compares three runs on the same TX1 (GM20B, SM 5.3) with CUDA 12.6,
 cuBLAS 12.6.0.22, and cuDNN 9.3. The first two runs used at least 15 seconds
 per workload. The last used at least 5 seconds per workload and included
-FP16 HGEMM. Both 1,600 MHz runs used the separate higher-rate test build
-described above.
+FP16 HGEMM. Both 1,600 MHz runs used the development build that validated
+the higher-rate opt-in configuration.
 
 | Workload | ACTMON up to 800 MHz | Fixed 1,600 MHz | ACTMON up to 1,600 MHz |
 | --- | ---: | ---: | ---: |

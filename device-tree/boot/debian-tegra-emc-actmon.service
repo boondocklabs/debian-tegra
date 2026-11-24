@@ -1,0 +1,14 @@
+[Unit]
+Description=Start ACTMON for the TX1 1600 MHz EMC boot entry
+ConditionKernelCommandLine=debian_tegra.emc_1600=1
+ConditionPathExists=/sys/firmware/devicetree/base/external-memory-controller@7001b000/nvidia,enable-emc-1600
+BindsTo=debian-tegra-emc-watchdog.service
+After=debian-tegra-emc-watchdog.service sys-kernel-debug.mount
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/grep -qw 1600000000 /sys/kernel/debug/emc/available_rates
+ExecStartPre=/usr/sbin/sysctl -w kernel.hardlockup_panic=1
+ExecStart=/usr/sbin/modprobe tegra30_devfreq
+ExecStop=/usr/sbin/modprobe -r tegra30_devfreq
+RemainAfterExit=yes
