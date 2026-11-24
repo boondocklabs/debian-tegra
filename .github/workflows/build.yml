@@ -17,12 +17,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build kernel image and headers
         run: bash scripts/build-kernel.sh
+      - name: Stage kernel packages
+        run: |
+          mkdir artifact
+          cp out/linux-image-*.deb out/linux-headers-*.deb artifact/
       - uses: actions/upload-artifact@v4
         with:
           name: tx1-kernel
-          path: |
-            out/linux-image-*.deb
-            out/linux-headers-*.deb
+          path: artifact/
           if-no-files-found: error
           retention-days: 30
 
@@ -41,10 +43,14 @@ jobs:
           path: out
       - name: Build module
         run: bash scripts/build-modules.sh "${{ matrix.module }}"
+      - name: Stage module package
+        run: |
+          mkdir artifact
+          cp out/debian-tegra-${{ matrix.module }}-tx1_*.deb artifact/
       - uses: actions/upload-artifact@v4
         with:
           name: tx1-${{ matrix.module }}
-          path: out/debian-tegra-${{ matrix.module }}-tx1_*.deb
+          path: artifact/
           if-no-files-found: error
           retention-days: 30
 
@@ -60,10 +66,14 @@ jobs:
           path: out
       - name: Build GPU and fan device trees
         run: bash scripts/build-device-tree.sh
+      - name: Stage device tree package
+        run: |
+          mkdir artifact
+          cp out/debian-tegra-tx1-device-tree_*.deb artifact/
       - uses: actions/upload-artifact@v4
         with:
           name: tx1-device-tree
-          path: out/debian-tegra-tx1-device-tree_*.deb
+          path: artifact/
           if-no-files-found: error
           retention-days: 30
 
