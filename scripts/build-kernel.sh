@@ -17,7 +17,7 @@ if [[ ${1:-} == --container ]]; then
     /project/kernel/patches/0001-tegra210-gpu-dma-domain.patch
   cp /project/kernel/tx1-arm64.config /build/obj/.config
   /build/source/scripts/config --file /build/obj/.config \
-    --disable MODULE_SIG --disable DEBUG_INFO_BTF \
+    --disable MODULE_SIG --disable DEBUG_INFO --disable DEBUG_INFO_BTF \
     --disable DEBUG_INFO_BTF_MODULES
   export SOURCE_DATE_EPOCH=1790812800
   export KBUILD_BUILD_TIMESTAMP='2026-10-01 00:00:00 UTC'
