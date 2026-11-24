@@ -41,6 +41,10 @@ fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan.dtb" \
   "$dest/tegra210-p2371-2180-ov5693.dtbo"
 test "$(fdtget -t s "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
   /host1x@50000000/i2c@546c0000/camera@36 compatible)" = ovti,ov5693
+install -d "$stage/usr/lib/udev/rules.d"
+cat > "$stage/usr/lib/udev/rules.d/70-debian-tegra-host1x-fence.rules" <<'RULE'
+SUBSYSTEM=="misc", KERNEL=="host1x-fence", GROUP="video", MODE="0660"
+RULE
 cat > "$stage/DEBIAN/control" <<EOF
 Package: $name
 Version: $DEBIAN_KERNEL_VERSION

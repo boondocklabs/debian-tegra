@@ -6,7 +6,7 @@ source_url=https://deb.debian.org/debian-security/pool/updates/main/l/linux/linu
 source_sha256=b75bb2e78a5c7762254e2af7685085c788a67eb342cb4092ad2a05eaf9fc33b7
 source_deb=cache/linux-source-6.12_6.12.118-1_all.deb
 kernel_abi=6.12.118-tegra-tx1
-package_version=6.12.118-1+tegra2
+package_version=6.12.118-1+tegra3
 
 if [[ ${1:-} == --container ]]; then
   mkdir -p /build/source-package /build/source /build/obj /project/out
@@ -31,7 +31,8 @@ if [[ ${1:-} == --container ]]; then
   make -C /build/source O=/build/obj LOCALVERSION=-tegra-tx1 olddefconfig
   grep -qx 'CONFIG_DEBUG_INFO_NONE=y' /build/obj/.config
   ! grep -qx 'CONFIG_DEBUG_INFO=y' /build/obj/.config
-  for required in CONFIG_KVM=y CONFIG_TEGRA_HOST1X=y CONFIG_DRM_TEGRA=y \
+  for required in CONFIG_KVM=y CONFIG_TEGRA_HOST1X=y CONFIG_TEGRA210_HOST1X_FENCE=y \
+    CONFIG_DRM_TEGRA=y \
     CONFIG_DRM_FBDEV_EMULATION=y CONFIG_FRAMEBUFFER_CONSOLE=y \
     CONFIG_I2C_TEGRA=y CONFIG_REGULATOR_MAX77620=y \
     CONFIG_PCI_TEGRA=y CONFIG_USB_XHCI_TEGRA=m \

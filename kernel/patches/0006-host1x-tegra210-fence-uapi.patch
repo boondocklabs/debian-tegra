@@ -1,0 +1,615 @@
+Port the NVIDIA fence userspace ABI from OE4T/linux-nv-oot
+b05da1f94ae5a2dbfe928ef7ab387035a2b77a20 to the built-in Tegra210 Host1x.
+
+--- /dev/null
++++ b/drivers/gpu/host1x/fence-uapi.c
+@@ -0,0 +1,423 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// SPDX-FileCopyrightText: Copyright (c) 2022-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++
++#include <linux/anon_inodes.h>
++#include <linux/compat.h>
++#include <linux/dma-fence-array.h>
++#include <linux/file.h>
++#include <linux/fs.h>
++#include <linux/host1x.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/poll.h>
++#include <linux/slab.h>
++#include <linux/sync_file.h>
++
++#include <uapi/linux/host1x-fence.h>
++
++#include "dev.h"
++#include "fence.h"
++
++static int dev_file_open(struct inode *inode, struct file *file)
++{
++	struct miscdevice *misc = file->private_data;
++	struct host1x *host = dev_get_drvdata(misc->parent);
++
++	file->private_data = host;
++	return nonseekable_open(inode, file);
++}
++
++static int host1x_install_fd(struct file *file, void __user *data,
++			     void *args, size_t size, __s32 *result)
++{
++	int fd = get_unused_fd_flags(O_CLOEXEC);
++
++	if (fd < 0) {
++		fput(file);
++		return fd;
++	}
++
++	*result = fd;
++	if (copy_to_user(data, args, size)) {
++		put_unused_fd(fd);
++		fput(file);
++		return -EFAULT;
++	}
++
++	fd_install(fd, file);
++	return 0;
++}
++
++static int dev_file_ioctl_create_fence(struct host1x *host1x, void __user *data)
++{
++	struct host1x_create_fence args;
++	struct host1x_syncpt *syncpt;
++	struct sync_file *sync;
++	struct dma_fence *fence;
++
++	if (copy_from_user(&args, data, sizeof(args)))
++		return -EFAULT;
++
++	if (args.reserved[0])
++		return -EINVAL;
++
++	syncpt = host1x_syncpt_get_by_id_noref(host1x, args.id);
++	if (!syncpt)
++		return -EINVAL;
++
++	host1x_syncpt_read(syncpt);
++	fence = host1x_fence_create(syncpt, args.threshold, true);
++	if (IS_ERR(fence))
++		return PTR_ERR(fence);
++
++	sync = sync_file_create(fence);
++	dma_fence_put(fence);
++	if (!sync)
++		return -ENOMEM;
++
++	return host1x_install_fd(sync->file, data, &args, sizeof(args),
++				 &args.fence_fd);
++}
++
++static int dev_file_ioctl_fence_extract(struct host1x *host1x, void __user *data)
++{
++	struct host1x_fence_extract_fence __user *fences_user_ptr;
++	struct dma_fence *fence, **fences;
++	struct host1x_fence_extract args;
++	struct dma_fence_array *array;
++	unsigned int num_fences, i, j;
++	unsigned long copy_err;
++	int err;
++
++	copy_err = copy_from_user(&args, data, sizeof(args));
++	if (copy_err)
++		return -EFAULT;
++
++	fences_user_ptr = u64_to_user_ptr(args.fences_ptr);
++
++	if (args.reserved[0] || args.reserved[1])
++		return -EINVAL;
++
++	fence = sync_file_get_fence(args.fence_fd);
++	if (!fence)
++		return -EINVAL;
++
++	array = to_dma_fence_array(fence);
++	if (array) {
++		fences = array->fences;
++		num_fences = array->num_fences;
++	} else {
++		fences = &fence;
++		num_fences = 1;
++	}
++
++	for (i = 0, j = 0; i < num_fences; i++) {
++		struct host1x_fence_extract_fence f;
++
++		err = host1x_fence_extract(fences[i], &f.id, &f.threshold);
++		if (err == -EINVAL && dma_fence_is_signaled(fences[i])) {
++			/* Likely stub fence */
++			continue;
++		} else if (err) {
++			goto put_fence;
++		}
++
++		if (j < args.num_fences) {
++			copy_err = copy_to_user(fences_user_ptr + j, &f, sizeof(f));
++			if (copy_err) {
++				err = -EFAULT;
++				goto put_fence;
++			}
++		}
++
++		j++;
++	}
++
++	args.num_fences = j;
++
++	copy_err = copy_to_user(data, &args, sizeof(args));
++	if (copy_err) {
++		err = -EFAULT;
++		goto put_fence;
++	}
++
++	dma_fence_put(fence);
++
++	return 0;
++
++put_fence:
++	dma_fence_put(fence);
++
++	return err;
++}
++
++struct host1x_pollfd_fence {
++	struct list_head list;
++
++	wait_queue_head_t *wq;
++
++	struct dma_fence *fence;
++	struct dma_fence_cb callback;
++	bool callback_set;
++};
++
++struct host1x_pollfd {
++	struct mutex lock;
++	wait_queue_head_t wq;
++
++	struct list_head fences;
++	unsigned int num_fences;
++};
++
++static int host1x_pollfd_release(struct inode *inode, struct file *file)
++{
++	struct host1x_pollfd *pollfd = file->private_data;
++	struct host1x_pollfd_fence *pfd_fence, *pfd_fence_temp;
++
++	mutex_lock(&pollfd->lock);
++
++	list_for_each_entry_safe(pfd_fence, pfd_fence_temp, &pollfd->fences, list) {
++		if (pfd_fence->callback_set) {
++			if (dma_fence_remove_callback(pfd_fence->fence, &pfd_fence->callback))
++				host1x_fence_cancel(pfd_fence->fence);
++			pfd_fence->callback_set = false;
++		}
++		/* Wait for an in-flight fence callback before freeing its state. */
++		spin_lock(pfd_fence->fence->lock);
++		spin_unlock(pfd_fence->fence->lock);
++
++		dma_fence_put(pfd_fence->fence);
++		kfree(pfd_fence);
++	}
++
++	mutex_unlock(&pollfd->lock);
++
++	kfree(pollfd);
++
++	return 0;
++}
++
++static unsigned int host1x_pollfd_poll(struct file *file, poll_table *wait)
++{
++	struct host1x_pollfd *pollfd = file->private_data;
++	struct host1x_pollfd_fence *pfd_fence, *pfd_fence_temp;
++	unsigned int mask = 0;
++
++	poll_wait(file, &pollfd->wq, wait);
++
++	mutex_lock(&pollfd->lock);
++
++	list_for_each_entry_safe(pfd_fence, pfd_fence_temp, &pollfd->fences, list) {
++		if (dma_fence_is_signaled(pfd_fence->fence)) {
++			mask = POLLPRI | POLLIN;
++
++			if (pfd_fence->callback_set) {
++				if (dma_fence_remove_callback(pfd_fence->fence,
++							      &pfd_fence->callback))
++					host1x_fence_cancel(pfd_fence->fence);
++				pfd_fence->callback_set = false;
++			}
++			/* Wait for an in-flight fence callback before freeing its state. */
++			spin_lock(pfd_fence->fence->lock);
++			spin_unlock(pfd_fence->fence->lock);
++
++			dma_fence_put(pfd_fence->fence);
++			list_del(&pfd_fence->list);
++			pollfd->num_fences--;
++			kfree(pfd_fence);
++		}
++	}
++
++	mutex_unlock(&pollfd->lock);
++
++	return mask;
++}
++
++static const struct file_operations host1x_pollfd_ops = {
++	.release = host1x_pollfd_release,
++	.poll = host1x_pollfd_poll,
++};
++
++static int dev_file_ioctl_create_pollfd(void __user *data)
++{
++	struct host1x_create_pollfd args;
++	struct host1x_pollfd *pollfd;
++	struct file *file;
++
++	if (copy_from_user(&args, data, sizeof(args)))
++		return -EFAULT;
++
++	if (args.reserved)
++		return -EINVAL;
++
++	pollfd = kzalloc(sizeof(*pollfd), GFP_KERNEL);
++	if (!pollfd)
++		return -ENOMEM;
++
++	init_waitqueue_head(&pollfd->wq);
++	mutex_init(&pollfd->lock);
++	INIT_LIST_HEAD(&pollfd->fences);
++
++	file = anon_inode_getfile("host1x_pollfd", &host1x_pollfd_ops, pollfd, O_RDWR);
++	if (IS_ERR(file)) {
++		kfree(pollfd);
++		return PTR_ERR(file);
++	}
++
++	return host1x_install_fd(file, data, &args, sizeof(args), &args.fd);
++}
++
++static void host1x_pollfd_callback(struct dma_fence *fence, struct dma_fence_cb *cb)
++{
++	struct host1x_pollfd_fence *pfd_fence = container_of(cb, struct host1x_pollfd_fence, callback);
++
++	wake_up_all(pfd_fence->wq);
++}
++
++static int dev_file_ioctl_trigger_pollfd(struct host1x *host1x, void __user *data)
++{
++	struct host1x_pollfd_fence *pfd_fence;
++	struct host1x_trigger_pollfd args;
++	struct host1x_syncpt *syncpt;
++	struct host1x_pollfd *pollfd;
++	struct dma_fence *fence;
++	unsigned long copy_err;
++	struct file *file;
++	int err;
++
++	copy_err = copy_from_user(&args, data, sizeof(args));
++	if (copy_err)
++		return -EFAULT;
++
++	if (args.reserved)
++		return -EINVAL;
++
++	file = fget(args.fd);
++	if (!file)
++		return -EINVAL;
++
++	if (file->f_op != &host1x_pollfd_ops) {
++		err = -EINVAL;
++		goto put_file;
++	}
++
++	pollfd = file->private_data;
++
++	syncpt = host1x_syncpt_get_by_id_noref(host1x, args.id);
++	if (!syncpt) {
++		err = -EINVAL;
++		goto put_file;
++	}
++
++	pfd_fence = kzalloc(sizeof(*pfd_fence), GFP_KERNEL);
++	if (!pfd_fence) {
++		err = -ENOMEM;
++		goto put_file;
++	}
++
++	host1x_syncpt_read(syncpt);
++	fence = host1x_fence_create(syncpt, args.threshold, false);
++	if (IS_ERR(fence)) {
++		err = PTR_ERR(fence);
++		goto free_pfd_fence;
++	}
++
++	pfd_fence->fence = fence;
++	pfd_fence->wq = &pollfd->wq;
++
++	mutex_lock(&pollfd->lock);
++	if (pollfd->num_fences >= 4096) {
++		err = -ENOSPC;
++		goto unlock;
++	}
++
++	err = dma_fence_add_callback(fence, &pfd_fence->callback,
++				     host1x_pollfd_callback);
++	if (err && err != -ENOENT)
++		goto unlock;
++
++	pfd_fence->callback_set = !err;
++	list_add_tail(&pfd_fence->list, &pollfd->fences);
++	pollfd->num_fences++;
++	if (err == -ENOENT)
++		wake_up_all(&pollfd->wq);
++
++	mutex_unlock(&pollfd->lock);
++	fput(file);
++	return 0;
++
++unlock:
++	mutex_unlock(&pollfd->lock);
++	dma_fence_put(fence);
++free_pfd_fence:
++	kfree(pfd_fence);
++put_file:
++	fput(file);
++
++	return err;
++}
++
++static long dev_file_ioctl(struct file *file, unsigned int cmd,
++			   unsigned long arg)
++{
++	void __user *data = (void __user *)arg;
++	long err;
++
++	switch (cmd) {
++	case HOST1X_IOCTL_CREATE_FENCE:
++		err = dev_file_ioctl_create_fence(file->private_data, data);
++		break;
++
++	case HOST1X_IOCTL_CREATE_POLLFD:
++		err = dev_file_ioctl_create_pollfd(data);
++		break;
++
++	case HOST1X_IOCTL_TRIGGER_POLLFD:
++		err = dev_file_ioctl_trigger_pollfd(file->private_data, data);
++		break;
++
++	case HOST1X_IOCTL_FENCE_EXTRACT:
++		err = dev_file_ioctl_fence_extract(file->private_data, data);
++		break;
++
++	default:
++		err = -ENOTTY;
++	}
++
++	return err;
++}
++
++static const struct file_operations dev_file_fops = {
++	.owner = THIS_MODULE,
++	.open = dev_file_open,
++	.unlocked_ioctl = dev_file_ioctl,
++	.compat_ioctl = compat_ptr_ioctl,
++};
++
++static void host1x_fence_uapi_unregister(void *data)
++{
++	misc_deregister(data);
++}
++
++int host1x_fence_uapi_register(struct host1x *host)
++{
++	struct miscdevice *misc;
++	int err;
++
++	misc = devm_kzalloc(host->dev, sizeof(*misc), GFP_KERNEL);
++	if (!misc)
++		return -ENOMEM;
++
++	misc->minor = MISC_DYNAMIC_MINOR;
++	misc->name = "host1x-fence";
++	misc->fops = &dev_file_fops;
++	misc->parent = host->dev;
++	misc->mode = 0600;
++
++	err = misc_register(misc);
++	if (err)
++		return err;
++
++	return devm_add_action_or_reset(host->dev,
++					host1x_fence_uapi_unregister, misc);
++}
+--- /dev/null
++++ b/include/uapi/linux/host1x-fence.h
+@@ -0,0 +1,96 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++/* Copyright (c) 2022 NVIDIA Corporation */
++
++#ifndef _UAPI__LINUX_HOST1X_FENCE_H
++#define _UAPI__LINUX_HOST1X_FENCE_H
++
++#include <linux/ioctl.h>
++#include <linux/types.h>
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++struct host1x_create_fence {
++	/**
++	 * @id: [in]
++	 *
++	 * ID of the syncpoint to create a fence for.
++	 */
++	__u32 id;
++
++	/**
++	 * @threshold: [in]
++	 *
++	 * When the syncpoint reaches this value, the fence will be signaled.
++	 * The syncpoint is considered to have reached the threshold when the
++	 * following condition is true:
++	 *
++	 * 	((value - threshold) & 0x80000000U) == 0U
++	 *
++	 */
++	__u32 threshold;
++
++	/**
++	 * @fence_fd: [out]
++	 *
++	 * New sync_file file descriptor containing the created fence.
++	 */
++	__s32 fence_fd;
++
++	__u32 reserved[1];
++};
++
++struct host1x_fence_extract_fence {
++	__u32 id;
++	__u32 threshold;
++};
++
++struct host1x_fence_extract {
++	/**
++	 * @fence_fd: [in]
++	 *
++	 * sync_file file descriptor
++	 */
++	__s32 fence_fd;
++
++	/**
++	 * @num_fences: [in,out]
++	 *
++	 * In: size of the `fences_ptr` array counted in elements.
++	 * Out: required size of the `fences_ptr` array counted in elements.
++	 */
++	__u32 num_fences;
++
++	/**
++	 * @fences_ptr: [in]
++	 *
++	 * Pointer to array of `struct host1x_fence_extract_fence`.
++	 */
++	__u64 fences_ptr;
++
++	__u32 reserved[2];
++};
++
++struct host1x_create_pollfd {
++	__s32 fd;
++	__u32 reserved;
++};
++
++struct host1x_trigger_pollfd {
++	__s32 fd;
++	__u32 id;
++	__u32 threshold;
++	__u32 reserved;
++};
++
++#define HOST1X_IOCTL_CREATE_FENCE        _IOWR('X', 0x02, struct host1x_create_fence)
++#define HOST1X_IOCTL_FENCE_EXTRACT       _IOWR('X', 0x05, struct host1x_fence_extract)
++#define HOST1X_IOCTL_CREATE_POLLFD       _IOWR('X', 0x10, struct host1x_create_pollfd)
++#define HOST1X_IOCTL_TRIGGER_POLLFD      _IOWR('X', 0x11, struct host1x_trigger_pollfd)
++
++#if defined(__cplusplus)
++}
++#endif
++
++#endif
+--- a/drivers/gpu/host1x/Kconfig
++++ b/drivers/gpu/host1x/Kconfig
+@@ -19,6 +19,13 @@
+ 
+ if TEGRA_HOST1X
+ 
++config TEGRA210_HOST1X_FENCE
++	bool "NVIDIA fence userspace interface on Tegra210"
++	depends on TEGRA_HOST1X=y && ARCH_TEGRA_210_SOC && SYNC_FILE
++	help
++	  Expose the NVIDIA BSP fence and event polling ioctls on Tegra210
++	  for userspace libraries that open /dev/host1x-fence.
++
+ config TEGRA_HOST1X_FIREWALL
+ 	bool "Enable HOST1X security firewall"
+ 	default y
+--- a/drivers/gpu/host1x/Makefile
++++ b/drivers/gpu/host1x/Makefile
+@@ -21,5 +21,7 @@
+ host1x-$(CONFIG_IOMMU_API) += \
+ 	context.o
+ 
++host1x-$(CONFIG_TEGRA210_HOST1X_FENCE) += fence-uapi.o
++
+ obj-$(CONFIG_TEGRA_HOST1X) += host1x.o
+ obj-$(CONFIG_TEGRA_HOST1X_CONTEXT_BUS) += context_bus.o
+--- a/drivers/gpu/host1x/fence.h
++++ b/drivers/gpu/host1x/fence.h
+@@ -25,6 +25,10 @@
+ 	struct list_head list;
+ };
+ 
++struct host1x;
++int host1x_fence_uapi_register(struct host1x *host);
++int host1x_fence_extract(struct dma_fence *fence, u32 *id, u32 *threshold);
++
+ void host1x_fence_signal(struct host1x_syncpt_fence *fence);
+ 
+ #endif
+--- a/drivers/gpu/host1x/fence.c
++++ b/drivers/gpu/host1x/fence.c
+@@ -71,6 +71,20 @@
+ 	.get_timeline_name = host1x_syncpt_fence_get_timeline_name,
+ 	.enable_signaling = host1x_syncpt_fence_enable_signaling,
+ };
++
++int host1x_fence_extract(struct dma_fence *fence, u32 *id, u32 *threshold)
++{
++	struct host1x_syncpt_fence *sf;
++
++	if (fence->ops != &host1x_syncpt_fence_ops)
++		return -EINVAL;
++
++	sf = to_host1x_fence(fence);
++	*id = host1x_syncpt_id(sf->sp);
++	*threshold = sf->threshold;
++
++	return 0;
++}
+ 
+ void host1x_fence_signal(struct host1x_syncpt_fence *f)
+ {
+--- a/drivers/gpu/host1x/dev.c
++++ b/drivers/gpu/host1x/dev.c
+@@ -660,6 +660,13 @@
+ 	if (err < 0)
+ 		goto unregister;
+ 
++	if (IS_ENABLED(CONFIG_TEGRA210_HOST1X_FENCE) &&
++	    of_device_is_compatible(pdev->dev.of_node, "nvidia,tegra210-host1x")) {
++		err = host1x_fence_uapi_register(host);
++		if (err)
++			dev_warn(&pdev->dev, "failed to register fence device: %d\n", err);
++	}
++
+ 	return 0;
+ 
+ unregister:
+@@ -779,6 +786,8 @@
+ static struct platform_driver tegra_host1x_driver = {
+ 	.driver = {
+ 		.name = "tegra-host1x",
++		/* Userspace fence descriptors can outlive the device file. */
++		.suppress_bind_attrs = IS_ENABLED(CONFIG_TEGRA210_HOST1X_FENCE),
+ 		.of_match_table = host1x_of_match,
+ 		.pm = &host1x_pm_ops,
+ 	},

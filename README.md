@@ -44,7 +44,7 @@ Tegra `host1x`, DRM display, I2C, and display regulators are built in so the HDM
 framebuffer console can appear during kernel initialization. NVIDIA `nvgpu`
 and `nvmap` remain separate upgradeable module packages; early display does
 not require the compute GPU driver. The build uses `-mtune=cortex-a57` and
-package revision `6.12.118-1+tegra2`. The kernel, HDMI DRM connector,
+package revision `6.12.118-1+tegra3`. The kernel, HDMI DRM connector,
 GPU modules, XUSB, Wi-Fi, and Bluetooth have booted on the TX1 developer kit.
 The OV5693 boot entry exposes the E3326 sensor through V4L2 as 10-bit
 Bayer (`BG10`). The two tested capture sizes are 2592×1944 and 1296×972.
@@ -56,6 +56,10 @@ signals are active low in the TX1 overlay so the sensor runs with both pins
 high. The overlay also selects the CSI-C calibration pad and VI input 2.
 The kernel patches initialize the V4L2 format negotiation crop from the
 active sensor crop and program the selected sensor mode on each stream start.
+
+The Tegra210 kernel exposes the NVIDIA BSP fence and event polling ioctls
+through `/dev/host1x-fence`. The device tree package grants access to members
+of the `video` group, matching the GPU device permissions.
 
 The P2597 fan driver inverts the active-low PWM output. The DTB, thermal
 controller, and hwmon retain a 0–255 duty scale so jtop reports 0% for off
