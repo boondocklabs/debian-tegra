@@ -54,7 +54,52 @@ the build can still be started manually from GitHub Actions.
 The device tree package installs files under
 `/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/`. Select the GPU or GPU/fan
 DTB in the board's bootloader configuration. Installing these packages does
-not change the bootloader or produce an SD image.
+not change the bootloader.
+
+## Bootable TX1 SD image
+
+With Docker on an ARM64 host, build a 4 GiB Debian 13 SD image using the five
+version-pinned packages from the signed APT repository:
+
+```sh
+bash scripts/create-sd-image.sh --authorized-keys ~/.ssh/id_ed25519.pub
+```
+
+The output is `out/debian-tegra-tx1-sd.img` with a SHA-256 file beside it. Use
+`--size-mib` for a larger card, `--output` for another filename, and `--force`
+to replace an existing output. Use an 8 GB or larger SD card for the default
+4 GiB image. The builder uses privileged Docker for its debootstrap chroot
+mounts and verifies the APT signing key fingerprint before installing the
+packages. It creates a `debian` account with the supplied SSH key and
+passwordless sudo, enables wired DHCP and serial login, and generates unique
+SSH host keys on first boot.
+
+On macOS, identify the SD card with `diskutil list`, then replace `diskN`
+below with that card's disk number:
+
+```sh
+diskutil unmountDisk /dev/diskN
+sudo dd if=out/debian-tegra-tx1-sd.img of=/dev/rdiskN bs=4m status=progress
+diskutil eject /dev/diskN
+```
+
+The image has one GPT ext4 partition containing `/boot/extlinux/extlinux.conf`,
+the packaged kernel and modules, an initramfs with TX1 SD/PMIC drivers, and
+the GPU/fan device tree. It has **no bootloader**: the TX1's eMMC U-Boot must
+try SD (`mmc1`) before eMMC (`mmc0`). The tested developer kit does this. If
+the SD kernel cannot boot, remove the card and reboot to use eMMC; there is no
+automatic boot-failure fallback. The generated image passed an offline build,
+filesystem, and partition check; this particular image builder has not yet
+been physically boot-tested.
+
+Without TX1 firmware, the image defaults to the safe boot entry that keeps
+`nvgpu` unloaded. Pass `--firmware-dir DIR` with a local firmware tree
+containing `tegra21x/pmu_sig.bin` to copy GPU firmware and default to the
+GPU-enabled entry. If that tree also contains `brcm/fw_bcmdhd.bin` and
+`brcm/nvram.txt`, the builder installs the BCM4354 Wi-Fi aliases. Firmware and
+CUDA userspace are not downloaded or distributed by this repository. Debian
+package updates within the same kernel ABI use APT; a new kernel ABI requires
+updating the boot entry or rebuilding the image.
 
 ## CUDA userspace
 
@@ -62,8 +107,7 @@ CUDA needs matching NVIDIA userspace libraries and TX1 firmware in addition
 to these kernel packages. The tested combination used R36.5.1 `libcuda` from
 NVIDIA's `nvidia-l4t-cuda` package and CUDA 12.6.77 `libcudart` from NVIDIA's
 `cuda-cudart-12-6` package. Those binaries are fetched from NVIDIA separately;
-this repository does not contain or redistribute them. It also contains no
-application, board provisioning, or SD image scripts.
+this repository does not contain or redistribute them.
 
 ## APT repository
 
