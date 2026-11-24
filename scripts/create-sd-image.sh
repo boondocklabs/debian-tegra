@@ -10,8 +10,8 @@ Build a Debian 13 Jetson TX1 SD image from the signed debian-tegra APT repo.
 
 Options:
   --authorized-keys FILE  Public SSH key(s) for the debian user (required)
-  --wifi-ssid SSID         Wi-Fi network name (requires --wifi-password-file)
-  --wifi-password-file FILE  WPA/WPA2 password or 64-digit hex PSK
+  --wifi-ssid SSID         Wi-Fi network name; prompts for WPA/WPA2 password
+  --wifi-password-file FILE  Read password from a file instead of prompting
   --wifi-hidden            Connect to an SSID that does not broadcast
   --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
   --no-firmware           Skip firmware and default to the safe boot entry
@@ -55,9 +55,19 @@ if [[ ${1:-} != --container ]]; then
   if [[ -n $firmware_dir && $no_firmware == 1 ]]; then
     echo '--firmware-dir and --no-firmware cannot be combined' >&2; exit 2
   fi
+  if [[ -n $firmware_dir ]]; then
+    [[ -s $firmware_dir/tegra21x/pmu_sig.bin ]] || {
+      echo '--firmware-dir must contain tegra21x/pmu_sig.bin' >&2; exit 2;
+    }
+  fi
+  mkdir -p out
+  if [[ -e out/$output && $force != 1 ]]; then
+    echo "out/$output exists; use --force to replace it" >&2
+    exit 2
+  fi
   if [[ -n $wifi_ssid || -n $wifi_password_file || $wifi_hidden == 1 ]]; then
-    [[ -n $wifi_ssid && -s $wifi_password_file ]] || {
-      echo 'Wi-Fi requires --wifi-ssid and a nonempty --wifi-password-file' >&2; exit 2;
+    [[ -n $wifi_ssid ]] || {
+      echo '--wifi-password-file and --wifi-hidden require --wifi-ssid' >&2; exit 2;
     }
     [[ $no_firmware == 0 ]] || {
       echo 'Wi-Fi options cannot be combined with --no-firmware' >&2; exit 2;
@@ -69,17 +79,28 @@ if [[ ${1:-} != --container ]]; then
     if printf %s "$wifi_ssid" | LC_ALL=C grep -q '[[:cntrl:]]'; then
       echo 'Wi-Fi SSID cannot contain control characters' >&2; exit 2
     fi
-    wifi_password_file=$(realpath "$wifi_password_file")
-  fi
-  if [[ -n $firmware_dir ]]; then
-    [[ -s $firmware_dir/tegra21x/pmu_sig.bin ]] || {
-      echo '--firmware-dir must contain tegra21x/pmu_sig.bin' >&2; exit 2;
+    if [[ -z $wifi_password_file ]]; then
+      if ! (: > /dev/tty) 2>/dev/null; then
+        echo 'A terminal is required for the Wi-Fi password prompt; use --wifi-password-file for noninteractive builds' >&2
+        exit 2
+      fi
+      wifi_temp_file=$(mktemp "${TMPDIR:-/tmp}/debian-tegra-wifi.XXXXXXXX")
+      chmod 600 "$wifi_temp_file"
+      trap 'rm -f "$wifi_temp_file"' EXIT
+      printf 'Wi-Fi password for %s: ' "$wifi_ssid" > /dev/tty
+      if ! IFS= read -r -s wifi_password < /dev/tty; then
+        echo 'A terminal is required for the Wi-Fi password prompt; use --wifi-password-file for noninteractive builds' >&2
+        exit 2
+      fi
+      printf '\n' > /dev/tty
+      printf '%s' "$wifi_password" > "$wifi_temp_file"
+      unset wifi_password
+      wifi_password_file=$wifi_temp_file
+    fi
+    [[ -s $wifi_password_file ]] || {
+      echo 'Wi-Fi password file is empty or missing' >&2; exit 2;
     }
-  fi
-  mkdir -p out
-  if [[ -e out/$output && $force != 1 ]]; then
-    echo "out/$output exists; use --force to replace it" >&2
-    exit 2
+    wifi_password_file=$(realpath "$wifi_password_file")
   fi
   authorized_keys=$(realpath "$authorized_keys")
   mounts=(--mount "type=bind,source=$(pwd),target=/project"

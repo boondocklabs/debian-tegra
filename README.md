@@ -74,20 +74,21 @@ packages. It creates a `debian` account with the supplied SSH key and
 passwordless sudo, enables wired DHCP and serial login, and generates unique
 SSH host keys on first boot.
 
-To connect over WPA/WPA2 Wi-Fi, put the password in a one-line file readable
-only by you, then pass its path when building:
+To connect over WPA/WPA2 Wi-Fi, pass the SSID and enter the password at the
+terminal prompt:
 
 ```sh
 bash scripts/create-sd-image.sh --authorized-keys ~/.ssh/id_ed25519.pub \
-  --wifi-ssid 'Your network' --wifi-password-file ~/tx1-wifi-password --force
+  --wifi-ssid 'Your network' --force
 ```
 
 The password must be 8–63 printable ASCII characters or a 64-digit hex PSK.
-The SSID and password cannot begin or end with a space.
-Add `--wifi-hidden` for a network that does not broadcast its SSID. The image
-stores the password in a root-only NetworkManager profile so Wi-Fi can connect
-at boot; keep the resulting image private. Without these options, the image
-uses wired DHCP and has no Wi-Fi connection profile.
+The SSID and password cannot begin or end with a space. Use
+`--wifi-password-file FILE` for a noninteractive build, or add `--wifi-hidden`
+for a network that does not broadcast its SSID. The image stores the password
+in a root-only NetworkManager profile so Wi-Fi can connect at boot; keep the
+resulting image private. Without these options, the image uses wired DHCP and
+has no Wi-Fi connection profile.
 
 On macOS, identify the SD card with `diskutil list`, then replace `diskN`
 below with that card's disk number:
