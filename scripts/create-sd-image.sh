@@ -79,6 +79,18 @@ if [[ ${1:-} != --container ]]; then
       echo "NVIDIA BSP SHA-256 mismatch: $bsp" >&2; exit 1
     }
     mounts+=(--mount "type=bind,source=$(pwd)/$bsp,target=/input/bsp.tbz2,readonly")
+    brcm_package=cache/firmware-brcm80211_20250410-2_all.deb
+    brcm_url=https://deb.debian.org/debian/pool/non-free-firmware/f/firmware-nonfree/firmware-brcm80211_20250410-2_all.deb
+    brcm_sha256=266cc703e2299f5253fd1ff9a1fd625d85a2c8e5a88b1a65fcc190ac384ce3d7
+    if [[ ! -s $brcm_package ]]; then
+      curl --fail --location --retry 3 --output "$brcm_package.partial" "$brcm_url"
+      mv -f "$brcm_package.partial" "$brcm_package"
+    fi
+    actual_sha256=$(openssl dgst -sha256 "$brcm_package" | awk '{print $NF}')
+    [[ $actual_sha256 == "$brcm_sha256" ]] || {
+      echo "Debian BCM4354 firmware SHA-256 mismatch: $brcm_package" >&2; exit 1
+    }
+    mounts+=(--mount "type=bind,source=$(pwd)/$brcm_package,target=/input/brcm-firmware.deb,readonly")
   fi
   docker build --platform linux/arm64 -f Containerfile.sd -t debian-tegra-sd-builder .
   docker run --rm --privileged --platform linux/arm64 \
@@ -102,7 +114,7 @@ part_size_mib=$((IMAGE_SIZE_MIB - 2))
 
 mkdir -p "$root" /project/out
 debootstrap --arch=arm64 --variant=minbase \
-  --include=systemd-sysv,systemd-timesyncd,udev,dbus,openssh-server,sudo,network-manager,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd \
+  --include=systemd-sysv,systemd-timesyncd,udev,dbus,openssh-server,sudo,network-manager,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd,gzip \
   trixie "$root" https://deb.debian.org/debian
 
 install -d "$root/usr/share/keyrings" "$root/etc/apt/sources.list.d"
@@ -205,7 +217,20 @@ EOF
     cp "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.txt" \
       "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.nvidia,p2371-2180.txt"
   fi
+  if [[ -s $firmware_source/brcm/brcmfmac4354-sdio.clm_blob ]]; then
+    install -m 644 "$firmware_source/brcm/brcmfmac4354-sdio.clm_blob" \
+      "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.clm_blob"
+  fi
   gpu_default=debian-tegra-gpu
+fi
+if [[ -f /input/brcm-firmware.deb ]]; then
+  dpkg-deb -x /input/brcm-firmware.deb /build/debian-brcm-firmware
+  install -m 644 \
+    /build/debian-brcm-firmware/usr/lib/firmware/brcm/brcmfmac4354-sdio.clm_blob \
+    "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.clm_blob"
+  install -d "$root/usr/share/doc/firmware-brcm80211"
+  install -m 644 /build/debian-brcm-firmware/usr/share/doc/firmware-brcm80211/copyright \
+    "$root/usr/share/doc/firmware-brcm80211/copyright"
 fi
 
 chroot "$root" update-initramfs -u -k "$DEBIAN_KERNEL_ABI"
@@ -213,8 +238,11 @@ initrd=$root/boot/initrd.img-$DEBIAN_KERNEL_ABI
 [[ -s $initrd ]] && (( $(stat -c %s "$initrd") < 14000000 )) || {
   echo 'TX1 initramfs exceeds the verified U-Boot size limit' >&2; exit 1;
 }
-install -m 644 "$root/boot/vmlinuz-$DEBIAN_KERNEL_ABI" \
-  "$root/boot/Image-$DEBIAN_KERNEL_ABI"
+gzip -dc "$root/boot/vmlinuz-$DEBIAN_KERNEL_ABI" \
+  > "$root/boot/Image-$DEBIAN_KERNEL_ABI"
+[[ $(od -An -tx4 -j 56 -N 4 "$root/boot/Image-$DEBIAN_KERNEL_ABI" | tr -d ' ') == 644d5241 ]] || {
+  echo 'Decompressed kernel lacks the ARM64 Image magic' >&2; exit 1;
+}
 install -m 644 \
   "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan.dtb" \
   "$root/boot/tegra210-p2371-2180-nvgpu-fan.dtb"
@@ -226,7 +254,13 @@ cat > "$root/usr/local/sbin/debian-tegra-refresh-sd-boot" <<EOF
 set -eu
 abi=$DEBIAN_KERNEL_ABI
 test -f "/boot/vmlinuz-\$abi" || exit 0
-cp -f "/boot/vmlinuz-\$abi" "/boot/Image-\$abi"
+tmp=\$(mktemp "/boot/.Image-\$abi.XXXXXXXX")
+trap 'rm -f "\$tmp"' EXIT
+gzip -dc "/boot/vmlinuz-\$abi" > "\$tmp"
+test "\$(od -An -tx4 -j 56 -N 4 "\$tmp" | tr -d ' ')" = 644d5241
+chmod 644 "\$tmp"
+mv -f "\$tmp" "/boot/Image-\$abi"
+trap - EXIT
 dtb="/usr/lib/linux-image-\$abi/nvidia/tegra210-p2371-2180-nvgpu-fan.dtb"
 test -f "\$dtb" || exit 0
 cp -f "\$dtb" /boot/tegra210-p2371-2180-nvgpu-fan.dtb

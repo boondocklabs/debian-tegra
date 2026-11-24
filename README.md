@@ -88,19 +88,22 @@ the packaged kernel and modules, an initramfs with TX1 SD/PMIC drivers, and
 the GPU/fan device tree. It has **no bootloader**: the TX1's eMMC U-Boot must
 try SD (`mmc1`) before eMMC (`mmc0`). The tested developer kit does this. If
 the SD kernel cannot boot, remove the card and reboot to use eMMC; there is no
-automatic boot-failure fallback. The generated image passed an offline build,
-filesystem, and partition check; this particular image builder has not yet
-been physically boot-tested.
+automatic boot-failure fallback. On a TX1 Developer Kit, U-Boot selected this
+SD image, started Linux 6.12, and reached Debian's multi-user serial login.
+The builder also checks the filesystem and partition table. SSH requires a
+working network connection; the image configures wired DHCP but has no Wi-Fi
+credentials.
 
-By default, the builder downloads NVIDIA's Jetson Linux R32.7.6 TX1 BSP,
-checks its pinned SHA-256, and extracts the GM20B GPU, BCM4354 Wi-Fi, and
-XUSB firmware into the image. The GPU-enabled boot entry is the default;
+By default, the builder downloads NVIDIA's Jetson Linux R32.7.6 TX1 BSP and
+Debian's `firmware-brcm80211` package, checks their pinned SHA-256 hashes,
+and extracts the GM20B GPU, BCM4354 Wi-Fi, XUSB, and BCM4354 channel firmware
+into the image. The GPU-enabled boot entry is the default;
 the menu also offers a safe entry that keeps `nvgpu` unloaded. Use
 `--firmware-dir DIR` to supply a local firmware tree instead, or
-`--no-firmware` to skip firmware and default to the safe entry. The BSP is
-cached locally under the ignored `cache/` directory. Firmware is included
-only in the image you build locally; it is not committed, built in CI, or
-published in the APT repository. CUDA userspace is separate. Debian package
+`--no-firmware` to skip firmware and default to the safe entry. Downloads stay
+under the ignored `cache/` directory. Firmware stays in your local cache and
+image; it is not committed, built in CI, or published in the APT repository.
+CUDA userspace is separate. Debian package
 updates within the same kernel ABI use APT; a new kernel ABI requires
 updating the boot entry or rebuilding the image.
 
