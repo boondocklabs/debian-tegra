@@ -129,20 +129,32 @@ updating the boot entry or rebuilding the image.
 
 ## CUDA userspace
 
-By default, the SD image builder downloads NVIDIA's R36.5.1 `nvidia-l4t-cuda`
-package and CUDA 12.6.77 `cuda-cudart-12-6` package, checks pinned SHA-256
-hashes, and extracts their libraries into `/opt/debian-tegra/`. It configures
-the dynamic linker so applications can load `libcuda.so.1` and
-`libcudart.so.12`. Use `--no-cuda` to omit them. The downloads stay in the
-ignored `cache/` directory and are included only in your locally built image;
-this repository, CI, and the APT repository do not distribute them. The
-libraries are not registered as Debian packages, so rebuilding the image is
-required to change their versions.
+By default, the SD image builder installs NVIDIA's full ARM64 Jetson
+`cuda-toolkit-12-6` package set from NVIDIA's CUDA repository. This includes
+`nvcc`, headers, development tools, and the cuBLAS, cuFFT, cuRAND, cuSOLVER,
+cuSPARSE, and NVRTC libraries. It also downloads the R36.5.1
+`nvidia-l4t-cuda` package, verifies its pinned SHA-256 hash, and places its
+driver libraries under `/opt/debian-tegra/`. The toolkit packages are tracked
+by Debian's package database; the R36 driver library is extracted separately.
+The dynamic linker can find both `libcuda.so.1` and `libcudart.so.12`.
+`nvcc` is available on the default PATH. The builder installs GCC 13 for
+CUDA 12.6 and applies a four-declaration `noexcept` compatibility adjustment
+to NVIDIA's CUDA header for Debian 13's glibc 2.41. It compiles a small
+SM 5.3 program during the build to verify that toolchain.
 
-This is the combination tested on a physical TX1 for device enumeration,
-memory transfers, and a small kernel launch. CUDA 12.6's separate libraries,
-including cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, NVRTC, and cuDNN, are
-not included or validated by this image builder.
+The default image is 8192 MiB to fit the toolkit. Use `--no-cuda` for a
+smaller image (minimum 2048 MiB). The builder uses NVIDIA's signed repository
+only while building and removes its source and key from the finished image.
+NVIDIA's current key uses a SHA-1 binding rejected by Debian 13's default
+verifier, so the builder uses `gpgv` with the SHA-256-pinned key for that
+build-time APT update. NVIDIA binaries stay in the ignored local cache or
+image; this repository, CI, and the debian-tegra APT repository do not
+redistribute them.
+
+The R36.5.1 driver and CUDA 12.6.77 runtime combination passed device
+enumeration, memory transfers, and a small kernel launch on a physical TX1.
+The full toolkit and its additional libraries have not yet been exercised on
+the TX1. cuDNN is a separate package and is not included.
 
 ## APT repository
 

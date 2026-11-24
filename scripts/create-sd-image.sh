@@ -16,9 +16,9 @@ Options:
   --root-password          Prompt for a local root password
   --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
   --no-firmware           Skip firmware and default to the safe boot entry
-  --no-cuda               Skip R36.5.1 CUDA driver and CUDA 12.6 runtime
+  --no-cuda               Skip R36.5.1 CUDA driver and CUDA 12.6 toolkit
   --output NAME           Image filename under out/ (default: debian-tegra-tx1-sd.img)
-  --size-mib N            Image size in MiB, at least 2048 (default: 4096)
+  --size-mib N            Image size in MiB (default: 8192; 2048 with --no-cuda)
   --hostname NAME         Device hostname (default: jetson-tx1)
   --force                 Replace an existing output image
 EOF
@@ -26,7 +26,7 @@ EOF
 
 if [[ ${1:-} != --container ]]; then
   authorized_keys= firmware_dir= wifi_ssid= wifi_password_file=
-  output=debian-tegra-tx1-sd.img size_mib=4096 hostname=jetson-tx1
+  output=debian-tegra-tx1-sd.img size_mib=8192 hostname=jetson-tx1
   force=0 no_firmware=0 no_cuda=0 wifi_hidden=0 root_password_enabled=0
   wifi_temp_file= root_temp_file=
   cleanup_secret_files() {
@@ -80,8 +80,10 @@ if [[ ${1:-} != --container ]]; then
   [[ $output =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.img$ ]] || {
     echo '--output must be a simple .img filename' >&2; exit 2;
   }
-  [[ $size_mib =~ ^[0-9]+$ ]] && ((size_mib >= 2048)) || {
-    echo '--size-mib must be at least 2048' >&2; exit 2;
+  min_size_mib=2048
+  [[ $no_cuda == 0 ]] && min_size_mib=8192
+  [[ $size_mib =~ ^[0-9]+$ ]] && ((size_mib >= min_size_mib)) || {
+    echo "--size-mib must be at least $min_size_mib" >&2; exit 2;
   }
   [[ $hostname =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || {
     echo 'Invalid hostname' >&2; exit 2;
@@ -178,10 +180,10 @@ if [[ ${1:-} != --container ]]; then
     cuda_driver=cache/nvidia-l4t-cuda_36.5.1-20260427132545_arm64.deb
     cuda_driver_url=https://repo.download.nvidia.com/jetson/t234/pool/main/n/nvidia-l4t-cuda/$(basename "$cuda_driver")
     cuda_driver_sha256=e2cba2ecb98de3cc4f3386acd93c9b66a6ce4c2894cab65367c743ece309c482
-    cuda_runtime=cache/cuda-cudart-12-6_12.6.77-1_arm64.deb
-    cuda_runtime_url=https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/$(basename "$cuda_runtime")
-    cuda_runtime_sha256=e86f78916c669e4bbf801977602f1772ffbe26499f0fd4f918ee2d1af7a7a9e0
-    for package in cuda_driver cuda_runtime; do
+    cuda_keyring=cache/cuda-ubuntu2204-keyring.gpg
+    cuda_keyring_url=https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-ubuntu2204-keyring.gpg
+    cuda_keyring_sha256=25100d6f2eccaee7d6719a70e3c0c6145064aa9edc2c32148f693ac4c524a376
+    for package in cuda_driver cuda_keyring; do
       path=${!package}
       url_var=${package}_url
       hash_var=${package}_sha256
@@ -195,7 +197,7 @@ if [[ ${1:-} != --container ]]; then
       }
     done
     mounts+=(--mount "type=bind,source=$(pwd)/$cuda_driver,target=/input/cuda-driver.deb,readonly"
-             --mount "type=bind,source=$(pwd)/$cuda_runtime,target=/input/cuda-runtime.deb,readonly")
+             --mount "type=bind,source=$(pwd)/$cuda_keyring,target=/input/cuda-keyring.gpg,readonly")
   fi
   docker build --platform linux/arm64 -f Containerfile.sd -t debian-tegra-sd-builder .
   docker run --rm --privileged --platform linux/arm64 \
@@ -275,19 +277,62 @@ chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   "$NVGPU_PACKAGE_NAME=$NVGPU_PACKAGE_VERSION" \
   "debian-tegra-tx1-device-tree=$DEBIAN_KERNEL_VERSION"
 
-if [[ -f /input/cuda-driver.deb && -f /input/cuda-runtime.deb ]]; then
+if [[ -f /input/cuda-driver.deb && -f /input/cuda-keyring.gpg ]]; then
   cuda_driver_dir=$root/opt/debian-tegra/nvidia-r36.5.1
-  cuda_runtime_dir=$root/opt/debian-tegra/cuda-12.6
-  mkdir -p "$cuda_driver_dir" "$cuda_runtime_dir"
+  mkdir -p "$cuda_driver_dir"
   dpkg-deb -x /input/cuda-driver.deb "$cuda_driver_dir"
-  dpkg-deb -x /input/cuda-runtime.deb "$cuda_runtime_dir"
   test -s "$cuda_driver_dir/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1.1"
-  test -s "$cuda_runtime_dir/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcudart.so.12.6.77"
+  install -m 644 /input/cuda-keyring.gpg \
+    "$root/usr/share/keyrings/debian-tegra-cuda-build-keyring.gpg"
+  cat > "$root/etc/apt/sources.list.d/debian-tegra-cuda-build.list" <<'EOF'
+deb [arch=arm64 signed-by=/usr/share/keyrings/debian-tegra-cuda-build-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/ /
+EOF
+  # Debian 13's sqv rejects a SHA-1 binding in NVIDIA's current key. gpgv
+  # still verifies the signed repository using the pinned NVIDIA key.
+  chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends gpgv gcc-13 g++-13 make
+  chroot "$root" apt-get update -o APT::Key::GPGVCommand=/usr/bin/gpgv \
+    -o APT::Update::Error-Mode=any
+  chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends cuda-toolkit-12-6=12.6.3-1
+  test -x "$root/usr/local/cuda-12.6/bin/nvcc"
+  test -s "$root/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcudart.so.12"
+  cat > "$root/usr/local/bin/nvcc" <<'EOF'
+#!/bin/sh
+NVCC_CCBIN=${NVCC_CCBIN:-/usr/bin/g++-13}
+export NVCC_CCBIN
+exec /usr/local/cuda-12.6/bin/nvcc "$@"
+EOF
+  chmod 755 "$root/usr/local/bin/nvcc"
+  cat > "$root/etc/profile.d/debian-tegra-cuda.sh" <<'EOF'
+export CUDA_HOME=/usr/local/cuda-12.6
+export NVCC_CCBIN=${NVCC_CCBIN:-/usr/bin/g++-13}
+export PATH="$PATH:$CUDA_HOME/bin"
+EOF
+  # glibc 2.41 marks these four functions noexcept; CUDA 12.6 predates that
+  # declaration and otherwise fails while compiling even a minimal .cu file.
+  cuda_math_header=$root/usr/local/cuda-12.6/targets/aarch64-linux/include/crt/math_functions.h
+  [[ $(grep -Ec '^extern .* (sinpi|cospi)\(double x\);$|^extern .* (sinpif|cospif)\(float x\);$' "$cuda_math_header") == 4 ]] || {
+    echo 'Unexpected CUDA math_functions.h; refusing to patch declarations' >&2; exit 1;
+  }
+  sed -i -E 's/((sinpi|cospi)\(double x\)|(sinpif|cospif)\(float x\));/\1 noexcept;/' \
+    "$cuda_math_header"
+  cat > "$root/tmp/debian-tegra-cuda-smoke.cu" <<'EOF'
+__global__ void probe(int *value) { *value = 7; }
+int main() { return 0; }
+EOF
+  chroot "$root" /usr/local/bin/nvcc -gencode arch=compute_53,code=sm_53 \
+    /tmp/debian-tegra-cuda-smoke.cu -o /tmp/debian-tegra-cuda-smoke
+  rm -f "$root/tmp/debian-tegra-cuda-smoke.cu" \
+    "$root/tmp/debian-tegra-cuda-smoke"
   cat > "$root/etc/ld.so.conf.d/debian-tegra-cuda.conf" <<'EOF'
 /opt/debian-tegra/nvidia-r36.5.1/usr/lib/aarch64-linux-gnu/nvidia
-/opt/debian-tegra/cuda-12.6/usr/local/cuda-12.6/targets/aarch64-linux/lib
+/usr/local/cuda-12.6/targets/aarch64-linux/lib
 EOF
   chroot "$root" ldconfig
+  rm -f "$root/etc/apt/sources.list.d/debian-tegra-cuda-build.list" \
+    "$root/usr/share/keyrings/debian-tegra-cuda-build-keyring.gpg"
+  rm -f "$root"/var/lib/apt/lists/*developer.download.nvidia.com*
 fi
 
 gpu_default=debian-tegra-safe
