@@ -13,6 +13,7 @@ Options:
   --wifi-ssid SSID         Wi-Fi network name; prompts for WPA/WPA2 password
   --wifi-password-file FILE  Read password from a file instead of prompting
   --wifi-hidden            Connect to an SSID that does not broadcast
+  --root-password          Prompt for a local root password
   --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
   --no-firmware           Skip firmware and default to the safe boot entry
   --output NAME           Image filename under out/ (default: debian-tegra-tx1-sd.img)
@@ -25,13 +26,44 @@ EOF
 if [[ ${1:-} != --container ]]; then
   authorized_keys= firmware_dir= wifi_ssid= wifi_password_file=
   output=debian-tegra-tx1-sd.img size_mib=4096 hostname=jetson-tx1
-  force=0 no_firmware=0 wifi_hidden=0
+  force=0 no_firmware=0 wifi_hidden=0 root_password_enabled=0
+  wifi_temp_file= root_temp_file=
+  cleanup_secret_files() {
+    if [[ -n $wifi_temp_file ]]; then rm -f "$wifi_temp_file"; fi
+    if [[ -n $root_temp_file ]]; then rm -f "$root_temp_file"; fi
+  }
+  prompt_secret_to_file() {
+    local prompt=$1 destination=$2 confirm=${3:-0} secret confirmation
+    if ! (: > /dev/tty) 2>/dev/null; then
+      echo 'A terminal is required for the password prompt' >&2
+      return 2
+    fi
+    printf '%s' "$prompt" > /dev/tty
+    if ! IFS= read -r -s secret < /dev/tty; then
+      echo 'Could not read password from terminal' >&2
+      return 2
+    fi
+    printf '\n' > /dev/tty
+    if [[ $confirm == 1 ]]; then
+      printf 'Confirm root password: ' > /dev/tty
+      if ! IFS= read -r -s confirmation < /dev/tty; then
+        echo 'Could not read password confirmation from terminal' >&2
+        return 2
+      fi
+      printf '\n' > /dev/tty
+      [[ $secret == "$confirmation" ]] || {
+        echo 'Root passwords did not match' >&2; return 2;
+      }
+    fi
+    printf '%s' "$secret" > "$destination"
+  }
   while (($#)); do
     case $1 in
       --authorized-keys) authorized_keys=${2:?missing key file}; shift 2 ;;
       --wifi-ssid) wifi_ssid=${2:?missing Wi-Fi SSID}; shift 2 ;;
       --wifi-password-file) wifi_password_file=${2:?missing Wi-Fi password file}; shift 2 ;;
       --wifi-hidden) wifi_hidden=1; shift ;;
+      --root-password) root_password_enabled=1; shift ;;
       --firmware-dir) firmware_dir=${2:?missing firmware directory}; shift 2 ;;
       --no-firmware) no_firmware=1; shift ;;
       --output) output=${2:?missing image name}; shift 2 ;;
@@ -65,6 +97,7 @@ if [[ ${1:-} != --container ]]; then
     echo "out/$output exists; use --force to replace it" >&2
     exit 2
   fi
+  trap cleanup_secret_files EXIT
   if [[ -n $wifi_ssid || -n $wifi_password_file || $wifi_hidden == 1 ]]; then
     [[ -n $wifi_ssid ]] || {
       echo '--wifi-password-file and --wifi-hidden require --wifi-ssid' >&2; exit 2;
@@ -80,21 +113,9 @@ if [[ ${1:-} != --container ]]; then
       echo 'Wi-Fi SSID cannot contain control characters' >&2; exit 2
     fi
     if [[ -z $wifi_password_file ]]; then
-      if ! (: > /dev/tty) 2>/dev/null; then
-        echo 'A terminal is required for the Wi-Fi password prompt; use --wifi-password-file for noninteractive builds' >&2
-        exit 2
-      fi
       wifi_temp_file=$(mktemp "${TMPDIR:-/tmp}/debian-tegra-wifi.XXXXXXXX")
       chmod 600 "$wifi_temp_file"
-      trap 'rm -f "$wifi_temp_file"' EXIT
-      printf 'Wi-Fi password for %s: ' "$wifi_ssid" > /dev/tty
-      if ! IFS= read -r -s wifi_password < /dev/tty; then
-        echo 'A terminal is required for the Wi-Fi password prompt; use --wifi-password-file for noninteractive builds' >&2
-        exit 2
-      fi
-      printf '\n' > /dev/tty
-      printf '%s' "$wifi_password" > "$wifi_temp_file"
-      unset wifi_password
+      prompt_secret_to_file "Wi-Fi password for $wifi_ssid: " "$wifi_temp_file"
       wifi_password_file=$wifi_temp_file
     fi
     [[ -s $wifi_password_file ]] || {
@@ -102,12 +123,23 @@ if [[ ${1:-} != --container ]]; then
     }
     wifi_password_file=$(realpath "$wifi_password_file")
   fi
+  if [[ $root_password_enabled == 1 ]]; then
+    root_temp_file=$(mktemp "${TMPDIR:-/tmp}/debian-tegra-root.XXXXXXXX")
+    chmod 600 "$root_temp_file"
+    prompt_secret_to_file 'Root password: ' "$root_temp_file" 1
+    [[ -s $root_temp_file ]] || {
+      echo 'Root password cannot be empty' >&2; exit 2;
+    }
+  fi
   authorized_keys=$(realpath "$authorized_keys")
   mounts=(--mount "type=bind,source=$(pwd),target=/project"
           --mount "type=bind,source=$authorized_keys,target=/input/authorized_keys,readonly"
           --mount type=volume,target=/build)
   if [[ -n $wifi_ssid ]]; then
     mounts+=(--mount "type=bind,source=$wifi_password_file,target=/input/wifi_password,readonly")
+  fi
+  if [[ $root_password_enabled == 1 ]]; then
+    mounts+=(--mount "type=bind,source=$root_temp_file,target=/input/root_password,readonly")
   fi
   if [[ -n $firmware_dir ]]; then
     firmware_dir=$(realpath "$firmware_dir")
@@ -162,7 +194,7 @@ part_size_mib=$((IMAGE_SIZE_MIB - 2))
 
 mkdir -p "$root" /project/out
 debootstrap --arch=arm64 --variant=minbase \
-  --include=systemd-sysv,systemd-timesyncd,udev,dbus,openssh-server,sudo,network-manager,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd,gzip \
+  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd,gzip \
   trixie "$root" https://deb.debian.org/debian
 
 install -d "$root/usr/share/keyrings" "$root/etc/apt/sources.list.d"
@@ -332,7 +364,15 @@ PARTUUID=$partuuid / ext4 defaults,noatime,errors=remount-ro 0 1
 EOF
 chroot "$root" groupadd -f render
 chroot "$root" useradd -m -s /bin/bash -G sudo,adm,dialout,video,render debian
-chroot "$root" passwd -l root
+if [[ -f /input/root_password ]]; then
+  [[ -s /input/root_password ]] || { echo 'Root password is empty' >&2; exit 2; }
+  { printf 'root:'; cat /input/root_password; printf '\n'; } | chroot "$root" chpasswd
+  [[ $(chroot "$root" passwd -S root | awk '{print $2}') == P ]] || {
+    echo 'Could not set the root password' >&2; exit 1;
+  }
+else
+  chroot "$root" passwd -l root
+fi
 chroot "$root" passwd -l debian
 uid=$(chroot "$root" id -u debian)
 gid=$(chroot "$root" id -g debian)
@@ -433,7 +473,7 @@ SUBSYSTEM=="misc", KERNEL=="nvmap", GROUP="video", MODE="0660"
 SUBSYSTEM=="nvidia-gpu", KERNEL=="nvhost-*", GROUP="video", MODE="0660"
 SUBSYSTEM=="nvidia-gpu-v2", GROUP="video", MODE="0660"
 EOF
-chroot "$root" systemctl enable NetworkManager ssh ssh-host-keys \
+chroot "$root" systemctl enable NetworkManager avahi-daemon ssh ssh-host-keys \
   systemd-timesyncd serial-getty@ttyS0
 chroot "$root" systemctl set-default multi-user.target
 rm -f "$root/etc/ssh/ssh_host_"* "$root/usr/sbin/policy-rc.d"

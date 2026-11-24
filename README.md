@@ -71,8 +71,8 @@ to replace an existing output. Use an 8 GB or larger SD card for the default
 4 GiB image. The builder uses privileged Docker for its debootstrap chroot
 mounts and verifies the APT signing key fingerprint before installing the
 packages. It creates a `debian` account with the supplied SSH key and
-passwordless sudo, enables wired DHCP and serial login, and generates unique
-SSH host keys on first boot.
+passwordless sudo, enables wired DHCP, Avahi mDNS, and serial login, and
+generates unique SSH host keys on first boot.
 
 To connect over WPA/WPA2 Wi-Fi, pass the SSID and enter the password at the
 terminal prompt:
@@ -89,6 +89,11 @@ for a network that does not broadcast its SSID. The image stores the password
 in a root-only NetworkManager profile so Wi-Fi can connect at boot; keep the
 resulting image private. Without these options, the image uses wired DHCP and
 has no Wi-Fi connection profile.
+
+Add `--root-password` to prompt twice for a root password. This enables root
+login on the local console; root SSH login remains disabled. Without the
+option, the root account stays locked. With a network connection, Avahi
+advertises the configured hostname as `jetson-tx1.local` by default.
 
 On macOS, identify the SD card with `diskutil list`, then replace `diskN`
 below with that card's disk number:
