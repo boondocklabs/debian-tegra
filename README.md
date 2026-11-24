@@ -12,8 +12,8 @@ The port has been exercised on a TX1 with NVIDIA R36.5.1 `libcuda` and CUDA
 memory, JIT-loaded SM 5.3 PTX, launched a kernel, and read back its result.
 The CUDA runtime also completed a memory round trip. This is an experimental
 compatibility result, not NVIDIA support for TX1 on R36.5 or a claim that
-every CUDA 12 release works. GitHub Actions compiles packages; it cannot run
-these hardware tests.
+every CUDA 12 release works. The hardware results below were measured on a
+physical TX1 Developer Kit. GitHub Actions verifies the package builds.
 
 ## What it builds
 
@@ -23,14 +23,14 @@ these hardware tests.
 | `linux-headers-6.12.118-tegra-tx1` | Matching headers for external modules |
 | `debian-tegra-nvmap-tx1` | Patched NVIDIA nvmap module |
 | `debian-tegra-nvgpu-tx1` | Patched NVIDIA nvgpu module for GM20B |
-| `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI overlay |
+| `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI and EMC overlays |
 
 The kernel comes from Debian's `6.12.118-1` source package. Its URL and
 SHA-256 are pinned in [build-kernel.sh](scripts/build-kernel.sh). The
 [module source commits](modules/sources.env), [kernel config](kernel/tx1-arm64.config),
-[kernel patch](kernel/patches/0001-tegra210-gpu-dma-domain.patch),
-[module patches](modules), [fan overlay](device-tree/tx1-fan.dtso), and
-[OV5693 overlay](device-tree/tx1-ov5693.dtso) are checked in. The kernel ABI
+[kernel patches](kernel/patches), [module patches](modules),
+[fan overlay](device-tree/tx1-fan.dtso), [OV5693 overlay](device-tree/tx1-ov5693.dtso),
+and [EMC overlay](device-tree/tx1-emc.dtso) are checked in. The kernel ABI
 is `6.12.118-tegra-tx1`; the module and device tree packages depend on that
 exact kernel version.
 
@@ -44,7 +44,7 @@ Tegra `host1x`, DRM display, I2C, and display regulators are built in so the HDM
 framebuffer console can appear during kernel initialization. NVIDIA `nvgpu`
 and `nvmap` remain separate upgradeable module packages; early display does
 not require the compute GPU driver. The build uses `-mtune=cortex-a57` and
-package revision `6.12.118-1+tegra3`. The kernel, HDMI DRM connector,
+package revision `6.12.118-1+tegra4`. The kernel, HDMI DRM connector,
 GPU modules, XUSB, Wi-Fi, and Bluetooth have booted on the TX1 developer kit.
 The OV5693 boot entry exposes the E3326 sensor through V4L2 as 10-bit
 Bayer (`BG10`). The two tested capture sizes are 2592×1944 and 1296×972.
@@ -64,6 +64,39 @@ of the `video` group, matching the GPU device permissions.
 The P2597 fan driver inverts the active-low PWM output. The DTB, thermal
 controller, and hwmon retain a 0–255 duty scale so jtop reports 0% for off
 and 100% for full speed. Zero duty turns off the fan supply by default.
+On the test board, the fan started from the off state and sped up when the
+cooling state was raised.
+
+## TX1 EMC and ACTMON
+
+The optional `tegra210-p2371-2180-nvgpu-fan-ov5693-emc.dtb` enables ACTMON
+scaling for RAM code 0 at 408, 665.6, and 800 MHz. It reads the nominal and
+derated LPDDR4 timings that NVIDIA CBoot trains on each boot. The DTB
+requires the P2371-2180 CBoot handoff at `0x83100000`.
+
+On one TX1 with RAM code 0, the packaged 408–800 MHz range passed all eight
+workloads in the 15-second suite and a 128 MiB RAM integrity test. A separate
+opt-in test kernel and DTB used six trained rates from 408 to 1,600 MHz.
+The higher rates of 1,065.6, 1,331.2, and 1,600 MHz each passed a 32 MiB RAM
+integrity test. All 1,314 EMC samples from the fixed-rate CUDA run measured
+1,600 MHz.
+
+With automatic scaling on the higher-rate test entry, EMC reached 1,600 MHz
+in 150 of 153 samples during a 15-second CUDA copy and returned to 408 MHz
+about 1.5 seconds after the load ended. The 64-second MAX77620 hardware
+watchdog armed before ACTMON loaded, and the known-good OV5693 entry stayed
+the default throughout testing.
+
+Copy the packaged EMC DTB from `/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/` to
+`/boot/`. Add a copy of the OV5693 entry in `/boot/extlinux/extlinux.conf`
+with a unique label and point its `FDT` line to the EMC DTB. Keep the original
+entry as the default while testing. After boot, use these commands to read
+the current EMC clock and ACTMON’s transition counters.
+
+```sh
+sudo cat /sys/kernel/debug/clk/emc/clk_rate
+cat /sys/class/devfreq/6000c800.actmon/trans_stat
+```
 
 ## Build
 
@@ -217,8 +250,53 @@ Use `--image FILE` for another image, `--build-only` to compile without SSH,
 or `--known-hosts FILE` to select a verified SSH host-key file. Rebuilt images
 generate new SSH host keys on first boot, so verify a changed key on the serial
 console before updating your known-hosts entry. The probe results are printed
-individually and the script fails if any test fails. The NVIDIA driver may
-print a nonfatal missing `host1x-fence` message during these tests.
+individually and the script fails if any test fails. All seven probes passed
+on a TX1 with the ported Host1x fence interface.
+
+## CUDA benchmarks
+
+```sh
+bash scripts/test-cuda.sh --benchmark --seconds 15 --target debian@jetson-tx1.local
+```
+
+The table compares three runs on the same TX1 (GM20B, SM 5.3) with CUDA 12.6,
+cuBLAS 12.6.0.22, and cuDNN 9.3. The first two runs used at least 15 seconds
+per workload. The last used at least 5 seconds per workload and included
+FP16 HGEMM. Both 1,600 MHz runs used the separate higher-rate test build
+described above.
+
+| Workload | ACTMON up to 800 MHz | Fixed 1,600 MHz | ACTMON up to 1,600 MHz |
+| --- | ---: | ---: | ---: |
+| CUDA 32 MiB device-to-device copy | 4.33 GB/s | 9.17 GB/s | 9.10 GB/s |
+| cuBLAS 1024 × 1024 FP32 SGEMM | 302.18 GFLOP/s | 386.72 GFLOP/s | 384.66 GFLOP/s |
+| cuBLAS 1024 × 1024 FP16 HGEMM | — | — | **869.52 GFLOP/s** |
+| cuFFT FP32 C2C, length 4096, batch 64 | 125,650 transforms/s | 253,327 transforms/s | 251,232 transforms/s |
+| cuRAND 1,048,576 uniform FP32 values | 1.84 Gvalues/s | 3.78 Gvalues/s | 3.83 Gvalues/s |
+| cuSOLVER 512 × 512 FP32 Cholesky | 16.00 GFLOP/s | 22.00 GFLOP/s | 22.00 GFLOP/s |
+| cuSPARSE FP32 CSR SpMV, 1,835,008 nonzeros | 0.81 Gnonzeros/s | 1.56 Gnonzeros/s | 1.56 Gnonzeros/s |
+| cuDNN FP32 3 × 3 convolution, 32 input and output channels | 164.32 GFLOP/s | 166.78 GFLOP/s | 166.75 GFLOP/s |
+| NVRTC SM 5.3 SAXPY compilation | 104.23 ms | 95.03 ms | 94.58 ms |
+
+D2D throughput counts payload bytes copied. Each copy reads the payload and
+writes it, so 9.17 GB/s of payload corresponds to 18.34 GB/s of effective
+read-plus-write bandwidth. In the same automatic-scaling run, FP16 HGEMM
+took 2.470 ms versus 5.583 ms for FP32 SGEMM, a 2.26× throughput gain.
+
+The GPU workloads warm up and use CUDA events to time at least five batches
+of 20 operations. The reported latency is the median of the per-batch
+averages. NVRTC reports median host time for at least five compilations after
+a warmup compile. `--seconds` repeats each workload to meet the minimum wall
+time after warmup. Setup and validation are outside the reported timings.
+
+cuDNN is optional. The benchmark uses the installed cuDNN 8 or 9 runtime
+when it can load one, and skips convolution when neither is available.
+The [cuDNN 9.3.0 Jetson ARM64 package][cudnn-tx1] passed the TX1 benchmark.
+To try it without installing a system package, extract it on the TX1 with
+`dpkg-deb -x libcudnn9-cuda-12_9.3.0.75-1_arm64.deb ~/cudnn-9.3`.
+Then add `--cudnn-lib-dir /home/debian/cudnn-9.3/usr/lib/aarch64-linux-gnu`
+to the benchmark command. That option makes a missing runtime an error.
+
+[cudnn-tx1]: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/libcudnn9-cuda-12_9.3.0.75-1_arm64.deb
 
 ## APT repository
 

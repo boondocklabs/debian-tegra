@@ -41,6 +41,13 @@ fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan.dtb" \
   "$dest/tegra210-p2371-2180-ov5693.dtbo"
 test "$(fdtget -t s "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
   /host1x@50000000/i2c@546c0000/camera@36 compatible)" = ovti,ov5693
+dtc -@ -I dts -O dtb -o "$dest/tegra210-p2371-2180-emc.dtbo" \
+  /project/device-tree/tx1-emc.dtso
+fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
+  -o "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693-emc.dtb" \
+  "$dest/tegra210-p2371-2180-emc.dtbo"
+test "$(fdtget -t x "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693-emc.dtb" \
+  /reserved-memory/cboot-fdt@83100000 reg)" = '0 83100000 0 100000'
 install -d "$stage/usr/lib/udev/rules.d"
 cat > "$stage/usr/lib/udev/rules.d/70-debian-tegra-host1x-fence.rules" <<'RULE'
 SUBSYSTEM=="misc", KERNEL=="host1x-fence", GROUP="video", MODE="0660"
@@ -54,13 +61,15 @@ Depends: linux-image-$DEBIAN_KERNEL_ABI (= $DEBIAN_KERNEL_VERSION)
 Section: kernel
 Priority: optional
 Description: TX1 GPU, fan, and OV5693 device trees for Debian 13
- GPU-enabled P2371-2180 tree, P2597 fan, and optional OV5693 CSI overlay.
+ GPU-enabled P2371-2180 tree, P2597 fan, and optional OV5693 CSI and EMC overlays.
 EOF
 cat > "$stage/usr/share/doc/$name/README" <<EOF
 The GPU-enabled and fan-enabled DTBs are installed under
 /usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/.
 Select one from the bootloader configuration for a TX1 P2371-2180 module
-on the P2597 carrier. This package does not modify the boot menu.
+on the P2597 carrier. The EMC variant requires RAM code 0 and the NVIDIA
+CBoot-trained FDT handoff at 0x83100000. This package does not modify the
+boot menu.
 EOF
 dpkg-deb --build --root-owner-group "$stage" \
   "/project/out/${name}_${DEBIAN_KERNEL_VERSION}_arm64.deb"

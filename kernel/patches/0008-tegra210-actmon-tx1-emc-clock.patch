@@ -1,0 +1,71 @@
+Subject: [PATCH] Drive the TX1 EMC clock with ACTMON devfreq
+
+Use the Tegra124 activity counters and the TX1 EMC operating points.
+Request the validated rates through the EMC clock, whose provider holds
+the rail at the voltage needed by the full timing range.
+
+--- a/drivers/devfreq/tegra30-devfreq.c
++++ b/drivers/devfreq/tegra30-devfreq.c
+@@ -174,6 +174,7 @@
+ 	const struct tegra_devfreq_device_config *configs;
+ 	/* Weight value for count measurements */
+ 	unsigned int count_weight;
++	bool direct_emc;
+ };
+ 
+ struct tegra_devfreq {
+@@ -637,6 +638,7 @@
+ static int tegra_devfreq_target(struct device *dev, unsigned long *freq,
+ 				u32 flags)
+ {
++	struct tegra_devfreq *tegra = dev_get_drvdata(dev);
+ 	struct dev_pm_opp *opp;
+ 	int ret;
+ 
+@@ -646,7 +648,10 @@
+ 		return PTR_ERR(opp);
+ 	}
+ 
+-	ret = dev_pm_opp_set_opp(dev, opp);
++	if (tegra->soc->direct_emc)
++		ret = clk_set_rate(tegra->emc_clock, *freq);
++	else
++		ret = dev_pm_opp_set_opp(dev, opp);
+ 	dev_pm_opp_put(opp);
+ 
+ 	return ret;
+@@ -890,10 +895,15 @@
+ 		return err;
+ 	}
+ 
+-	err = devm_pm_opp_set_config(&pdev->dev, &config);
+-	if (err) {
+-		dev_err(&pdev->dev, "Failed to set OPP config: %d\n", err);
+-		return err;
++	if (tegra->soc->direct_emc) {
++		/* This P2180 table has a board-specific voltage floor in the EMC driver. */
++		if (clk_round_rate(tegra->emc_clock, 408000000) != 408000000 ||
++		    clk_round_rate(tegra->emc_clock, 800000000) != 800000000)
++			return dev_err_probe(&pdev->dev, -EPROBE_DEFER, "waiting for trained EMC timings\n");
++	} else {
++		err = devm_pm_opp_set_config(&pdev->dev, &config);
++		if (err)
++			return dev_err_probe(&pdev->dev, err, "Failed to set OPP config\n");
+ 	}
+ 
+ 	err = devm_pm_opp_of_add_table_indexed(&pdev->dev, 0);
+@@ -961,7 +971,14 @@
+ 	.count_weight = 2 * 256,
+ };
+ 
++static const struct tegra_devfreq_soc_data tegra210_soc = {
++	.configs = tegra124_device_configs,
++	.count_weight = 4 * 256,
++	.direct_emc = true,
++};
++
+ static const struct of_device_id tegra_devfreq_of_match[] = {
++	{ .compatible = "nvidia,tegra210-tx1-actmon", .data = &tegra210_soc, },
+ 	{ .compatible = "nvidia,tegra30-actmon",  .data = &tegra30_soc, },
+ 	{ .compatible = "nvidia,tegra124-actmon", .data = &tegra124_soc, },
+ 	{ },

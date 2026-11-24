@@ -33,7 +33,7 @@ if [[ ${1:-} == --container ]]; then
     /tmp/probes.cu -o /tmp/cuda-probes \
     -L/usr/local/cuda-12.6/targets/aarch64-linux/lib \
     -L/usr/local/cuda-12.6/targets/aarch64-linux/lib/stubs \
-    -lcublas -lcufft -lcurand -lcusolver -lcusparse -lnvrtc -lcuda
+    -lcublas -lcufft -lcurand -lcusolver -lcusparse -lnvrtc -lcuda -ldl
   test -s "$work/cuda-probes"
   echo "Built $work/cuda-probes"
   exit 0
@@ -51,23 +51,40 @@ Options:
                       (default: out/debian-tegra-tx1-sd.img)
   --target USER@HOST  SSH target (default: debian@jetson-tx1.local)
   --known-hosts FILE  Use a specified SSH known_hosts file
-  --build-only        Compile probes without copying or running them
+  --benchmark         Run the CUDA benchmarks instead of the seven probes
+  --seconds N         Minimum seconds per benchmark workload (default: 0)
+  --cudnn-lib-dir DIR  Require cuDNN and search this library directory on the TX1
+  --build-only        Compile without copying or running
 EOF
 }
 
 image=out/debian-tegra-tx1-sd.img
 target=debian@jetson-tx1.local
-known_hosts= build_only=0
+known_hosts= build_only=0 benchmark=0 seconds= cudnn_lib_dir=
 while (($#)); do
   case $1 in
     --image) image=${2:?missing image}; shift 2 ;;
     --target) target=${2:?missing target}; shift 2 ;;
     --known-hosts) known_hosts=${2:?missing known_hosts file}; shift 2 ;;
+    --benchmark) benchmark=1; shift ;;
+    --cudnn-lib-dir) cudnn_lib_dir=${2:?missing cuDNN library directory}; shift 2 ;;
+    --seconds) seconds=${2:?missing benchmark seconds}; shift 2 ;;
     --build-only) build_only=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+if [[ -n $seconds ]]; then
+  [[ $benchmark == 1 && $seconds =~ ^(0|[1-9][0-9]{0,3})$ ]] &&
+    ((seconds <= 3600)) || {
+      echo '--seconds requires --benchmark and an integer from 0 to 3600' >&2
+      exit 2
+    }
+fi
+if [[ -n $cudnn_lib_dir && ( $benchmark != 1 || $cudnn_lib_dir != /* || $cudnn_lib_dir == *:* ) ]]; then
+  echo '--cudnn-lib-dir requires --benchmark and an absolute directory on the TX1' >&2
+  exit 2
+fi
 [[ -s $image ]] || { echo "Missing SD image: $image" >&2; exit 2; }
 image=$(realpath "$image")
 ssh_options=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10)
@@ -87,6 +104,15 @@ remote_dir=/tmp/debian-tegra-cuda-tests
 ssh "${ssh_options[@]}" "$target" "install -d -m 700 $remote_dir"
 scp "${ssh_options[@]}" out/cuda-tests/cuda-probes \
   "$target:$remote_dir/cuda-probes"
+
+if [[ $benchmark == 1 ]]; then
+  benchmark_command="$remote_dir/cuda-probes benchmark ${seconds:-0}"
+  if [[ -n $cudnn_lib_dir ]]; then
+    printf -v cudnn_arg '%q' "LD_LIBRARY_PATH=$cudnn_lib_dir"
+    benchmark_command="env $cudnn_arg DEBIAN_TEGRA_REQUIRE_CUDNN=1 $benchmark_command"
+  fi
+  exec ssh "${ssh_options[@]}" "$target" "$benchmark_command"
+fi
 
 failed=0
 for probe in cuda cublas cufft curand cusolver cusparse nvrtc; do

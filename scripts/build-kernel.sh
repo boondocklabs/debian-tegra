@@ -6,7 +6,7 @@ source_url=https://deb.debian.org/debian-security/pool/updates/main/l/linux/linu
 source_sha256=b75bb2e78a5c7762254e2af7685085c788a67eb342cb4092ad2a05eaf9fc33b7
 source_deb=cache/linux-source-6.12_6.12.118-1_all.deb
 kernel_abi=6.12.118-tegra-tx1
-package_version=6.12.118-1+tegra3
+package_version=6.12.118-1+tegra4
 
 if [[ ${1:-} == --container ]]; then
   mkdir -p /build/source-package /build/source /build/obj /project/out
@@ -39,7 +39,8 @@ if [[ ${1:-} == --container ]]; then
     CONFIG_USB_STORAGE=m CONFIG_AHCI_TEGRA=m CONFIG_BLK_DEV_NVME=m \
     CONFIG_BRCMFMAC=m CONFIG_VIDEO_TEGRA=m \
     CONFIG_VIDEO_OV5693=m CONFIG_VIDEO_IMX219=m \
-    CONFIG_USB_VIDEO_CLASS=m; do
+    CONFIG_USB_VIDEO_CLASS=m CONFIG_TEGRA210_EMC=y \
+    CONFIG_ARM_TEGRA_DEVFREQ=m CONFIG_MAX77620_WATCHDOG=y; do
     grep -qx "$required" /build/obj/.config || {
       echo "Missing required TX1 config: $required" >&2; exit 1;
     }
