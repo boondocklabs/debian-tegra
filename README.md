@@ -71,6 +71,8 @@ exported alongside the packages. This requires the GitHub Pages source to be
 set to **GitHub Actions** and a dedicated, unencrypted ASCII-armored private
 key in the `APT_GPG_PRIVATE_KEY` Actions secret. The key is used only to sign
 the repository metadata; it is not included in the published files.
+The archive key fingerprint is
+`0F24 8B4E 0026 1A42 AC3E CC19 C078 7BB2 FD9D 04B6`.
 
 On a Debian 13 TX1 system, add the repository with:
 
