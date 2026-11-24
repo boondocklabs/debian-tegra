@@ -1,0 +1,153 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -13,6 +13,9 @@
+ #include <uapi/linux/nvgpu.h>
+ #include <linux/dma-buf.h>
+ #include <linux/reset.h>
++#ifdef NVGPU_TX1_PORT
++#include <linux/regulator/consumer.h>
++#endif
+ #include <nvgpu/vpr.h>
+ 
+ #if defined(CONFIG_TEGRA_DVFS)
+@@ -858,6 +861,105 @@
+ 	return err;
+ }
+ #endif /* CONFIG_COMMON_CLK */
++
++#ifdef NVGPU_TX1_PORT
++/* The mainline Tegra210 DT supplies these resources directly to GM20B.
++ * The legacy Tegra DVFS/MC railgate API is absent from Debian 6.12.
++ */
++static struct {
++	struct regulator *vdd;
++	struct clk *gpu;
++	struct clk *ref;
++	struct clk *pwr;
++	bool powered;
++} tx1_power;
++
++static int tx1_gpu_unrailgate(struct device *dev)
++{
++	struct gk20a_platform *platform = dev_get_drvdata(dev);
++	int err;
++
++	if (tx1_power.powered)
++		return 0;
++
++	if (!platform->reset_control)
++		return -ENODEV;
++
++	err = regulator_enable(tx1_power.vdd);
++	if (err)
++		return err;
++	err = clk_prepare_enable(tx1_power.gpu);
++	if (err)
++		goto disable_vdd;
++	err = clk_prepare_enable(tx1_power.ref);
++	if (err)
++		goto disable_gpu;
++	err = clk_prepare_enable(tx1_power.pwr);
++	if (err)
++		goto disable_ref;
++
++	err = clk_set_rate(tx1_power.pwr, 204000000);
++	if (err)
++		goto disable_pwr;
++	udelay(10);
++	err = reset_control_assert(platform->reset_control);
++	if (err)
++		goto disable_pwr;
++	udelay(10);
++	err = reset_control_deassert(platform->reset_control);
++	if (err)
++		goto disable_pwr;
++	udelay(10);
++	tx1_power.powered = true;
++	return 0;
++
++disable_pwr:
++	clk_disable_unprepare(tx1_power.pwr);
++disable_ref:
++	clk_disable_unprepare(tx1_power.ref);
++disable_gpu:
++	clk_disable_unprepare(tx1_power.gpu);
++disable_vdd:
++	regulator_disable(tx1_power.vdd);
++	return err;
++}
++
++static int tx1_gpu_railgate(struct device *dev)
++{
++	struct gk20a_platform *platform = dev_get_drvdata(dev);
++	int err;
++
++	if (!tx1_power.powered)
++		return 0;
++
++	err = reset_control_assert(platform->reset_control);
++	if (err)
++		return err;
++	udelay(10);
++	clk_disable_unprepare(tx1_power.pwr);
++	clk_disable_unprepare(tx1_power.ref);
++	clk_disable_unprepare(tx1_power.gpu);
++	tx1_power.powered = false;
++	return regulator_disable(tx1_power.vdd);
++}
++
++static int tx1_gpu_get_resources(struct device *dev)
++{
++	tx1_power.vdd = devm_regulator_get(dev, "vdd");
++	if (IS_ERR(tx1_power.vdd))
++		return PTR_ERR(tx1_power.vdd);
++	tx1_power.gpu = devm_clk_get(dev, "gpu");
++	if (IS_ERR(tx1_power.gpu))
++		return PTR_ERR(tx1_power.gpu);
++	tx1_power.ref = devm_clk_get(dev, "ref");
++	if (IS_ERR(tx1_power.ref))
++		return PTR_ERR(tx1_power.ref);
++	tx1_power.pwr = devm_clk_get(dev, "pwr");
++	if (IS_ERR(tx1_power.pwr))
++		return PTR_ERR(tx1_power.pwr);
++	return 0;
++}
++#endif
+ 
+ static int gk20a_tegra_probe(struct device *dev)
+ {
+@@ -931,7 +1033,17 @@
+ 	if (platform->platform_chip_id == TEGRA_132)
+ 		platform->soc_name = "tegra13x";
+ 
++#ifdef NVGPU_TX1_PORT
++	ret = tx1_gpu_get_resources(dev);
++	if (ret)
++		return ret;
++	platform->clk[0] = tx1_power.gpu;
++	platform->clk[1] = tx1_power.pwr;
++	platform->clk[2] = tx1_power.ref;
++	platform->num_clks = 3;
++#else
+ 	gk20a_tegra_get_clocks(dev);
++#endif
+ 	nvgpu_linux_init_clk_support(platform->g);
+ 
+ 	if (platform->clk_register) {
+@@ -1034,10 +1146,15 @@
+ 	/* power management callbacks */
+ 	.suspend = gk20a_tegra_suspend,
+ 
++#ifdef NVGPU_TX1_PORT
++	.railgate = tx1_gpu_railgate,
++	.unrailgate = tx1_gpu_unrailgate,
++#else
+ #if defined(CONFIG_TEGRA_DVFS)
+ 	.railgate = gm20b_tegra_railgate,
+ 	.unrailgate = gm20b_tegra_unrailgate,
+ 	.is_railgated = gk20a_tegra_is_railgated,
++#endif
+ #endif
+ 
+ 	.busy = gk20a_tegra_busy,

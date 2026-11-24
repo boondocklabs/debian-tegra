@@ -1,0 +1,24 @@
+diff --git a/drivers/gpu/nvgpu/common/pmu/fw/fw.c b/drivers/gpu/nvgpu/common/pmu/fw/fw.c
+--- a/drivers/gpu/nvgpu/common/pmu/fw/fw.c
++++ b/drivers/gpu/nvgpu/common/pmu/fw/fw.c
+@@ -279,10 +279,7 @@
+ 	}
+ 
+ exit:
+-	if (err) {
+-		pmu_fw_release(g, rtos_fw);
+-	}
+-
++	/* nvgpu_pmu_init_pmu_fw() owns cleanup on firmware load failure. */
+ 	return err;
+ }
+ 
+@@ -369,6 +366,8 @@
+ exit:
+ 	if (err) {
+ 		pmu_fw_release(g, rtos_fw);
++		nvgpu_kfree(g, rtos_fw);
++		*rtos_fw_p = NULL;
+ 	}
+ 	return err;
+ }

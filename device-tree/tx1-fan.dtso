@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+/plugin/;
+
+/* P2597 carrier fan wiring from the original R32 TX1 devkit DTB:
+ * PWM3, 45,334 ns period, and 5 V enable on TCA9539@0x74 GPIO 4.
+ * PWM1 belongs to the GPU voltage regulator and must not be touched.
+ */
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			vdd_fan: regulator-vdd-fan {
+				compatible = "regulator-fixed";
+				regulator-name = "vdd-fan";
+				regulator-min-microvolt = <5000000>;
+				regulator-max-microvolt = <5000000>;
+				gpio = <&exp1 4 0>;
+				regulator-enable-ramp-delay = <284>;
+			};
+
+			fan: pwm-fan {
+				compatible = "pwm-fan";
+				pwms = <&pwm 3 45334>;
+				fan-supply = <&vdd_fan>;
+				/* P2597 fan input is active low. The Tegra PWM driver
+				 * supports normal polarity only, so cooling duty descends.
+				 * Keep the final duty nonzero to hold PWM output enabled.
+				 */
+				cooling-levels = <255 175 135 95 1>;
+				#cooling-cells = <2>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/thermal-zones/cpu-thermal";
+		__overlay__ {
+			polling-delay = <1000>;
+			trips {
+				cpu_fan_1: fan-1 {
+					temperature = <52000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				cpu_fan_2: fan-2 {
+					temperature = <62000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				cpu_fan_3: fan-3 {
+					temperature = <72000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				cpu_fan_4: fan-4 {
+					temperature = <82000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+			};
+			cooling-maps {
+				fan-1 {
+					trip = <&cpu_fan_1>;
+					cooling-device = <&fan 1 1>;
+				};
+				fan-2 {
+					trip = <&cpu_fan_2>;
+					cooling-device = <&fan 2 2>;
+				};
+				fan-3 {
+					trip = <&cpu_fan_3>;
+					cooling-device = <&fan 3 3>;
+				};
+				fan-4 {
+					trip = <&cpu_fan_4>;
+					cooling-device = <&fan 4 4>;
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/thermal-zones/gpu-thermal";
+		__overlay__ {
+			polling-delay = <1000>;
+			trips {
+				gpu_fan_1: fan-1 {
+					temperature = <52000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				gpu_fan_2: fan-2 {
+					temperature = <62000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				gpu_fan_3: fan-3 {
+					temperature = <72000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+				gpu_fan_4: fan-4 {
+					temperature = <82000>;
+					hysteresis = <3000>;
+					type = "active";
+				};
+			};
+			cooling-maps {
+				fan-1 {
+					trip = <&gpu_fan_1>;
+					cooling-device = <&fan 1 1>;
+				};
+				fan-2 {
+					trip = <&gpu_fan_2>;
+					cooling-device = <&fan 2 2>;
+				};
+				fan-3 {
+					trip = <&gpu_fan_3>;
+					cooling-device = <&fan 3 3>;
+				};
+				fan-4 {
+					trip = <&gpu_fan_4>;
+					cooling-device = <&fan 4 4>;
+				};
+		};
+	};
+};
+};

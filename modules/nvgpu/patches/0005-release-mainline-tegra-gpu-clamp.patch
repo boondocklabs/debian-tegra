@@ -1,0 +1,24 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -15,6 +15,7 @@
+ #include <linux/reset.h>
+ #ifdef NVGPU_TX1_PORT
+ #include <linux/regulator/consumer.h>
++#include <soc/tegra/pmc.h>
+ #endif
+ #include <nvgpu/vpr.h>
+ 
+@@ -906,6 +907,12 @@
+ 	if (err)
+ 		goto disable_pwr;
+ 	udelay(10);
++	if (!dev->pm_domain) {
++		err = tegra_powergate_remove_clamping(TEGRA_POWERGATE_3D);
++		if (err)
++			goto disable_pwr;
++		udelay(10);
++	}
+ 	err = reset_control_deassert(platform->reset_control);
+ 	if (err)
+ 		goto disable_pwr;

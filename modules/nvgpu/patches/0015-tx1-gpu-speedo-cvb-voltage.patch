@@ -1,0 +1,79 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -17,6 +17,7 @@
+ #include <linux/regulator/consumer.h>
+ #include <linux/mutex.h>
+ #include <soc/tegra/pmc.h>
++#include <soc/tegra/fuse.h>
+ #endif
+ #include <nvgpu/vpr.h>
+ 
+@@ -891,10 +892,51 @@
+ 	844800000, 921600000, 998400000,
+ };
+ 
+-/* The original TX1 speedo-2 DVFS table permits 998.4 MHz at no more than
+- * 1150 mV. Until its CVB curve is ported, use that conservative rail voltage
+- * above the known working 217.6 MHz point. Never raise the PLL first.
++/* NVIDIA R32 Tegra210 NA GPCPLL CVB c0 values, corresponding to tx1_gpu_freqs.
++ * The remaining coefficients are shared: c1=8144, c2=-940, c3=808,
++ * c4=-21583, c5=226; speedo_scale=100, thermal_scale=10. This board's
++ * original kernel reports GPU speedo value 2101 and speedo ID 2.
+  */
++static const int tx1_gpu_cvb_c0[] = {
++	814294, 856185, 898077, 939968, 981860,
++	1023751, 1065642, 1107534, 1149425, 1191317,
++	1233208, 1275100, 1316991,
++};
++
++static int tx1_gpu_cvb_uv(unsigned long rate)
++{
++	int speedo = tegra_sku_info.gpu_speedo_value;
++	int cvb_uv, thermal_uv, target_uv;
++	unsigned int i;
++
++	BUILD_BUG_ON(ARRAY_SIZE(tx1_gpu_freqs) != ARRAY_SIZE(tx1_gpu_cvb_c0));
++	/* An unreadable fuse must never lead to an undervolted GPU. */
++	if (speedo < 1000 || speedo > 3000)
++		return 1150000;
++
++	for (i = 0; i < ARRAY_SIZE(tx1_gpu_freqs) - 1; i++)
++		if (rate <= tx1_gpu_freqs[i])
++			break;
++
++	/* Match tegra_get_cvb_voltage() and tegra_get_cvb_t_voltage(). Use
++	 * -25 C, the cold end of the TX1 module's rated operating range. Its
++	 * CVB thermal term is highest there across the rated temperature range.
++	 */
++	cvb_uv = DIV_ROUND_CLOSEST(-940 * speedo, 100);
++	cvb_uv = DIV_ROUND_CLOSEST((cvb_uv + 8144) * speedo, 100) +
++		tx1_gpu_cvb_c0[i];
++	thermal_uv = DIV_ROUND_CLOSEST(808 * speedo, 100) - 21583 +
++		DIV_ROUND_CLOSEST(226 * -25, 10);
++	thermal_uv = DIV_ROUND_CLOSEST(thermal_uv * -25, 10);
++	/* R32 speedo-2 PLL minimum is 818 mV, aligned up to 820 mV. */
++	target_uv = max(820000, roundup(cvb_uv + thermal_uv, 10000));
++	/* Mainline's PWM regulator can report up to a few mV below the exact
++	 * requested voltage. One original 10 mV alignment step covers that gap.
++	 */
++	target_uv += 10000;
++	return target_uv > 1150000 ? -ERANGE : target_uv;
++}
++
+ unsigned long tx1_gpu_get_rate(void)
+ {
+ 	return tx1_gpcclk ? clk_get_rate(tx1_gpcclk) : 0;
+@@ -915,7 +957,11 @@
+ 		err = old_uv;
+ 		goto out;
+ 	}
+-	target_uv = rate > 217600000UL ? 1150000 : 710000;
++	target_uv = tx1_gpu_cvb_uv(rate);
++	if (target_uv < 0) {
++		err = target_uv;
++		goto out;
++	}
+ 	if (target_uv > old_uv) {
+ 		err = regulator_set_voltage(tx1_power.vdd,
+ 					 target_uv, target_uv);

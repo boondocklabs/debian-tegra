@@ -1,0 +1,15 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/clk.c b/drivers/gpu/nvgpu/os/linux/clk.c
+--- a/drivers/gpu/nvgpu/os/linux/clk.c
++++ b/drivers/gpu/nvgpu/os/linux/clk.c
+@@ -157,4 +157,11 @@ static unsigned long nvgpu_linux_get_maxrate(struct gk20a *g, u32 api_domain)
+ #endif
+ 		/* If dvfs not supported */
+ 		if (ret == 0) {
++#ifdef NVGPU_TX1_PORT
++			/* The TX1 build has no clock arbiter range callback. Report
++			 * its current platform clock until a rate table is available.
++			 */
++			if (g->ops.clk_arb.get_arbiter_clk_range == NULL)
++				return nvgpu_linux_clk_get_rate(g, api_domain);
++#endif
+ 			int err = nvgpu_clk_arb_get_arbiter_clk_range(g,

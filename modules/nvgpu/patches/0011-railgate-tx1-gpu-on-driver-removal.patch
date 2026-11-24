@@ -1,0 +1,14 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -1079,5 +1079,10 @@ static int gk20a_tegra_remove(struct device *dev)
+ {
+ 	/* deinitialise tegra specific scaling quirks */
+ 	gk20a_tegra_scale_exit(dev);
++#ifdef NVGPU_TX1_PORT
++	/* Release the regulator and clocks before devm puts their handles. */
++	if (tx1_power.powered)
++		tx1_gpu_railgate(dev);
++#endif
+ 
+ #ifdef CONFIG_TEGRA_GK20A_NVHOST

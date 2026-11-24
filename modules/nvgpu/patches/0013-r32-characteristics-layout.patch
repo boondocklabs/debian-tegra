@@ -1,0 +1,66 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/ioctl_ctrl.c b/drivers/gpu/nvgpu/os/linux/ioctl_ctrl.c
+index 8ce9b30..0a2ec65 100644
+--- a/drivers/gpu/nvgpu/os/linux/ioctl_ctrl.c
++++ b/drivers/gpu/nvgpu/os/linux/ioctl_ctrl.c
+@@ -378,6 +378,11 @@ static long gk20a_ctrl_ioctl_gpu_characteristics(
+ 	long err = 0;
+ 	struct nvgpu_gpu_instance *gpu_instance;
+ 	ssize_t len;
++#ifdef NVGPU_TX1_PORT
++	bool tx1_legacy_request =
++		request->gpu_characteristics_buf_size == 256U;
++	u8 tx1_legacy_characteristics[256];
++#endif
+ 
+ 	u32 gr_instance_id = nvgpu_grmgr_get_gr_instance_id(g, gpu_instance_id);
+ 
+@@ -567,6 +572,31 @@ static long gk20a_ctrl_ioctl_gpu_characteristics(
+ 
+ 	if (request->gpu_characteristics_buf_size > 0) {
+ 		size_t write_size = sizeof(gpu);
++		const void *characteristics = &gpu;
++
++#ifdef NVGPU_TX1_PORT
++		if (tx1_legacy_request) {
++			/* R32.7.6 predates numa_domain_id, emc_en_mask and the
++			 * appended fields. Preserve its 256-byte layout. */
++			BUILD_BUG_ON(offsetof(struct nvgpu_gpu_characteristics,
++					      L2_cache_size) != 24);
++			BUILD_BUG_ON(offsetof(struct nvgpu_gpu_characteristics,
++					      max_ltc_per_fbp) != 136);
++			BUILD_BUG_ON(offsetof(struct nvgpu_gpu_characteristics,
++					      gr_compbit_store_base_hw) != 168);
++			memset(tx1_legacy_characteristics, 0,
++			       sizeof(tx1_legacy_characteristics));
++			memcpy(tx1_legacy_characteristics, &gpu, 16);
++			memcpy(tx1_legacy_characteristics + 16,
++			       (u8 *)&gpu + 24, 108);
++			memcpy(tx1_legacy_characteristics + 124,
++			       (u8 *)&gpu + 136, 32);
++			memcpy(tx1_legacy_characteristics + 160,
++			       (u8 *)&gpu + 168, 96);
++			characteristics = tx1_legacy_characteristics;
++			write_size = sizeof(tx1_legacy_characteristics);
++		}
++#endif
+ 
+ 		nvgpu_speculation_barrier();
+ 		if (write_size > request->gpu_characteristics_buf_size)
+@@ -574,11 +604,15 @@ static long gk20a_ctrl_ioctl_gpu_characteristics(
+ 
+ 		err = copy_to_user((void __user *)(uintptr_t)
+ 				   request->gpu_characteristics_buf_addr,
+-				   &gpu, write_size);
++				   characteristics, write_size);
+ 	}
+ 
+ 	if (err == 0)
+-		request->gpu_characteristics_buf_size = sizeof(gpu);
++		request->gpu_characteristics_buf_size =
++#ifdef NVGPU_TX1_PORT
++			tx1_legacy_request ? sizeof(tx1_legacy_characteristics) :
++#endif
++			sizeof(gpu);
+ 
+ 	gk20a_idle(g);
+ 

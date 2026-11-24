@@ -1,0 +1,18 @@
+diff --git a/drivers/iommu/tegra-smmu.c b/drivers/iommu/tegra-smmu.c
+--- a/drivers/iommu/tegra-smmu.c
++++ b/drivers/iommu/tegra-smmu.c
+@@ -982,5 +982,14 @@ static int tegra_smmu_of_xlate(struct device *dev,
+ 
+ static int tegra_smmu_def_domain_type(struct device *dev)
+ {
++	/* The TX1 nvgpu driver allocates GPU page tables and maps DMA-BUFs
++	 * through the DMA API. Its GM20B SMMU client needs translated IOVAs.
++	 * Keep the identity default for other Tegra clients until their
++	 * individual DMA requirements are validated.
++	 */
++	if (of_device_is_compatible(dev->of_node, "nvidia,gm20b") ||
++	    of_device_is_compatible(dev->of_node, "nvidia,tegra210-gm20b"))
++		return IOMMU_DOMAIN_DMA;
++
+ 	/*
+ 	 * FIXME: For now we want to run all translation in IDENTITY mode, due

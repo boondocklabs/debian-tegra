@@ -1,0 +1,203 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/clk.c b/drivers/gpu/nvgpu/os/linux/clk.c
+--- a/drivers/gpu/nvgpu/os/linux/clk.c
++++ b/drivers/gpu/nvgpu/os/linux/clk.c
+@@ -49,10 +49,14 @@
+ 	switch (api_domain) {
+ 	case CTRL_CLK_DOMAIN_SYSCLK:
+ 	case CTRL_CLK_DOMAIN_GPCCLK:
++#ifdef NVGPU_TX1_PORT
++		ret = tx1_gpu_get_rate();
++#else
+ 		if (g->clk.tegra_clk)
+ 			ret = clk_get_rate(g->clk.tegra_clk);
+ 		else
+ 			ret = clk_get_rate(platform->clk[0]);
++#endif
+ 		break;
+ 	case CTRL_CLK_DOMAIN_PWRCLK:
+ 		ret = clk_get_rate(platform->clk[1]);
+@@ -74,10 +78,14 @@
+ 
+ 	switch (api_domain) {
+ 	case CTRL_CLK_DOMAIN_GPCCLK:
++#ifdef NVGPU_TX1_PORT
++		ret = tx1_gpu_set_rate(dev_from_gk20a(g), rate);
++#else
+ 		if (g->clk.tegra_clk)
+ 			ret = clk_set_rate(g->clk.tegra_clk, rate);
+ 		else
+ 			ret = clk_set_rate(platform->clk[0], rate);
++#endif
+ 		break;
+ 	case CTRL_CLK_DOMAIN_PWRCLK:
+ 		ret = clk_set_rate(platform->clk[1], rate);
+@@ -151,6 +159,9 @@
+ 
+ 	switch (api_domain) {
+ 	case CTRL_CLK_DOMAIN_GPCCLK:
++#ifdef NVGPU_TX1_PORT
++		return 998400000UL;
++#endif
+ #ifdef CONFIG_TEGRA_DVFS
+ 		ret = tegra_dvfs_get_maxrate(g->clk.tegra_clk_parent);
+ #else
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a.h b/drivers/gpu/nvgpu/os/linux/platform_gk20a.h
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a.h
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a.h
+@@ -389,6 +389,10 @@
+ int gk20a_tegra_busy(struct device *dev);
+ void gk20a_tegra_idle(struct device *dev);
+ void gk20a_tegra_debug_dump(struct device *pdev);
++#ifdef NVGPU_TX1_PORT
++unsigned long tx1_gpu_get_rate(void);
++int tx1_gpu_set_rate(struct device *dev, unsigned long rate);
++#endif
+ 
+ static inline struct gk20a *get_gk20a(struct device *dev)
+ {
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -15,6 +15,7 @@
+ #include <linux/reset.h>
+ #ifdef NVGPU_TX1_PORT
+ #include <linux/regulator/consumer.h>
++#include <linux/mutex.h>
+ #include <soc/tegra/pmc.h>
+ #endif
+ #include <nvgpu/vpr.h>
+@@ -880,8 +881,62 @@
+ 	struct clk *gpu;
+ 	struct clk *ref;
+ 	struct clk *pwr;
++	struct mutex rate_lock;
+ 	bool powered;
+ } tx1_power;
++
++static unsigned long tx1_gpu_freqs[] = {
++	76800000, 153600000, 230400000, 307200000, 384000000,
++	460800000, 537600000, 614400000, 691200000, 768000000,
++	844800000, 921600000, 998400000,
++};
++
++/* The original TX1 speedo-2 DVFS table permits 998.4 MHz at no more than
++ * 1150 mV. Until its CVB curve is ported, use that conservative rail voltage
++ * above the known working 217.6 MHz point. Never raise the PLL first.
++ */
++unsigned long tx1_gpu_get_rate(void)
++{
++	return tx1_gpcclk ? clk_get_rate(tx1_gpcclk) : 0;
++}
++
++int tx1_gpu_set_rate(struct device *dev, unsigned long rate)
++{
++	int old_uv, target_uv, err;
++
++	if (!tx1_gpcclk)
++		return -ENODEV;
++	if (rate > 998400000UL)
++		return -ERANGE;
++
++	mutex_lock(&tx1_power.rate_lock);
++	old_uv = regulator_get_voltage(tx1_power.vdd);
++	if (old_uv < 0) {
++		err = old_uv;
++		goto out;
++	}
++	target_uv = rate > 217600000UL ? 1150000 : 710000;
++	if (target_uv > old_uv) {
++		err = regulator_set_voltage(tx1_power.vdd,
++					 target_uv, target_uv);
++		if (err)
++			goto out;
++		usleep_range(200, 250);
++	}
++
++	err = clk_set_rate(tx1_gpcclk, rate);
++	if (err) {
++		if (target_uv > old_uv)
++			regulator_set_voltage(tx1_power.vdd, old_uv, old_uv);
++		goto out;
++	}
++	if (target_uv < old_uv)
++		err = regulator_set_voltage(tx1_power.vdd,
++					 target_uv, target_uv);
++out:
++	mutex_unlock(&tx1_power.rate_lock);
++	return err;
++}
+ 
+ static int tx1_gpu_unrailgate(struct device *dev)
+ {
+@@ -960,6 +1015,7 @@
+ 
+ static int tx1_gpu_get_resources(struct device *dev)
+ {
++	mutex_init(&tx1_power.rate_lock);
+ 	tx1_power.vdd = devm_regulator_get(dev, "vdd");
+ 	if (IS_ERR(tx1_power.vdd))
+ 		return PTR_ERR(tx1_power.vdd);
+@@ -1052,6 +1108,7 @@
+ 	ret = tx1_gpu_get_resources(dev);
+ 	if (ret)
+ 		return ret;
++	platform->devfreq_governor = "simple_ondemand";
+ 	platform->clk[0] = tx1_power.gpu;
+ 	platform->clk[1] = tx1_power.pwr;
+ 	platform->clk[2] = tx1_power.ref;
+@@ -1113,17 +1170,32 @@
+ {
+ 	struct gk20a_platform *platform = gk20a_get_platform(dev);
+ 	struct gk20a *g = platform->g;
++#ifdef NVGPU_TX1_PORT
++	unsigned int i;
++#endif
+ 
+ 	/* make sure the clock is available */
+ 	if (!gk20a_clk_get(g))
+ 		return rate;
+ 
++#ifdef NVGPU_TX1_PORT
++	for (i = 0; i < ARRAY_SIZE(tx1_gpu_freqs) - 1; i++)
++		if (rate <= tx1_gpu_freqs[i])
++			return tx1_gpu_freqs[i];
++	return tx1_gpu_freqs[ARRAY_SIZE(tx1_gpu_freqs) - 1];
++#else
+ 	return clk_round_rate(clk_get_parent(g->clk.tegra_clk), rate);
++#endif
+ }
+ 
+ static int gk20a_clk_get_freqs(struct device *dev,
+ 				unsigned long **freqs, int *num_freqs)
+ {
++#ifdef NVGPU_TX1_PORT
++	*freqs = tx1_gpu_freqs;
++	*num_freqs = ARRAY_SIZE(tx1_gpu_freqs);
++	return 0;
++#else
+ 	struct gk20a_platform *platform = gk20a_get_platform(dev);
+ 	struct gk20a *g = platform->g;
+ 
+@@ -1137,6 +1209,7 @@
+ #else
+ 	return -EINVAL;
+ #endif
++#endif /* NVGPU_TX1_PORT */
+ }
+ #endif
+ 
+diff --git a/drivers/gpu/nvgpu/os/linux/scale.c b/drivers/gpu/nvgpu/os/linux/scale.c
+--- a/drivers/gpu/nvgpu/os/linux/scale.c
++++ b/drivers/gpu/nvgpu/os/linux/scale.c
+@@ -290,8 +290,10 @@
+ 	rounded_rate = platform->clk_round_rate(dev, local_freq);
+ 
+ 	/* Check for duplicate request */
+-	if (rounded_rate == g->last_freq)
++	if (rounded_rate == g->last_freq) {
++		*freq = rounded_rate;
+ 		return 0;
++	}
+ 
+ 	if (g->ops.clk.get_rate(g, CTRL_CLK_DOMAIN_GPCCLK) == rounded_rate)
+ 		*freq = rounded_rate;

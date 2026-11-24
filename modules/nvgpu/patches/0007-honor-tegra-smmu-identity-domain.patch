@@ -1,0 +1,24 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/linux-dma.c b/drivers/gpu/nvgpu/os/linux/linux-dma.c
+--- a/drivers/gpu/nvgpu/os/linux/linux-dma.c
++++ b/drivers/gpu/nvgpu/os/linux/linux-dma.c
+@@ -657,11 +657,19 @@ bool nvgpu_iommuable(struct gk20a *g)
+ #ifdef CONFIG_TEGRA_GK20A
+ 	struct nvgpu_os_linux *l = nvgpu_os_linux_from_gk20a(g);
+ 	struct device *dev = l->dev;
++	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
+ 
+ 	/*
+ 	 * Check against the nvgpu device to see if it's been marked as
+ 	 * IOMMU'able.
+ 	 */
+-	if (iommu_get_domain_for_dev(dev) == NULL)
++	if (domain == NULL)
+ 		return false;
++#ifdef NVGPU_TX1_PORT
++	/* Tegra210's mainline SMMU defaults to an identity domain. It must
++	 * not select SMMU translation or set the GPU's IOMMU address bit.
++	 */
++	if (domain->type == IOMMU_DOMAIN_IDENTITY)
++		return false;
++#endif
+ #endif

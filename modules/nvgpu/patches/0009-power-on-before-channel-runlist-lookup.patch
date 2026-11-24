@@ -1,0 +1,69 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/ioctl_channel.c b/drivers/gpu/nvgpu/os/linux/ioctl_channel.c
+index 48e9cdf..874587b 100644
+--- a/drivers/gpu/nvgpu/os/linux/ioctl_channel.c
++++ b/drivers/gpu/nvgpu/os/linux/ioctl_channel.c
+@@ -493,8 +493,17 @@ static int __gk20a_channel_open(struct gk20a *g, struct nvgpu_cdev *cdev,
+ 	if (!g)
+ 		return -ENODEV;
+ 
++	err = gk20a_busy(g);
++	if (err) {
++		nvgpu_err(g, "failed to power on, %d", err);
++		goto free_ref;
++	}
++
+ 	gpu_instance_id = nvgpu_get_gpu_instance_id_from_cdev(g, cdev);
+-	nvgpu_assert(gpu_instance_id < g->mig.num_gpu_instances);
++	if (gpu_instance_id >= g->mig.num_gpu_instances) {
++		err = -ENODEV;
++		goto idle_ref;
++	}
+ 
+ 	nvgpu_assert(runlist_id >= -1);
+ 	if (runlist_id == -1) {
+@@ -504,7 +513,8 @@ static int __gk20a_channel_open(struct gk20a *g, struct nvgpu_cdev *cdev,
+ 			nvgpu_engine_is_multimedia_runlist_id(g, runlist_id)) {
+ 			tmp_runlist_id = runlist_id;
+ 		} else {
+-			return -EINVAL;
++			err = -EINVAL;
++			goto idle_ref;
+ 		}
+ 	}
+ 
+@@ -515,24 +525,19 @@ static int __gk20a_channel_open(struct gk20a *g, struct nvgpu_cdev *cdev,
+ 	priv = nvgpu_kzalloc(g, sizeof(*priv));
+ 	if (!priv) {
+ 		err = -ENOMEM;
+-		goto free_ref;
++		goto idle_ref;
+ 	}
+ 
+-	err = gk20a_busy(g);
+-	if (err) {
+-		nvgpu_err(g, "failed to power on, %d", err);
+-		goto fail_busy;
+-	}
+ 	/* All the user space channel should be non privilege */
+ 	ch = nvgpu_channel_open_new(g, tmp_runlist_id, false,
+ 				nvgpu_current_pid(g), nvgpu_current_tid(g));
+-	gk20a_idle(g);
+ 	if (!ch) {
+ 		nvgpu_err(g,
+ 			"failed to get f");
+ 		err = -ENOMEM;
+ 		goto fail_busy;
+ 	}
++	gk20a_idle(g);
+ 
+ #ifdef CONFIG_NVGPU_TRACE
+ 	gk20a_channel_trace_sched_param(
+@@ -554,6 +559,8 @@ static int __gk20a_channel_open(struct gk20a *g, struct nvgpu_cdev *cdev,
+ 
+ fail_busy:
+ 	nvgpu_kfree(g, priv);
++idle_ref:
++	gk20a_idle(g);
+ free_ref:
+ 	nvgpu_put(g);
+ 	return err;

@@ -1,0 +1,13 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -1201,5 +1201,9 @@ struct gk20a_platform gm20b_tegra_platform = {
+ 	.dump_platform_dependencies = gk20a_tegra_debug_dump,
+ 
+ #ifdef CONFIG_NVGPU_SUPPORT_CDE
++#ifdef NVGPU_TX1_PORT
++	.has_cde = false,
++#else
+ 	.has_cde = true,
++#endif
+ #endif

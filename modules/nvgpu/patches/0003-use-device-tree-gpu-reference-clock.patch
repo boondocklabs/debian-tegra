@@ -1,0 +1,15 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/clk.c b/drivers/gpu/nvgpu/os/linux/clk.c
+--- a/drivers/gpu/nvgpu/os/linux/clk.c
++++ b/drivers/gpu/nvgpu/os/linux/clk.c
+@@ -120,7 +120,11 @@
+ {
+ 	struct clk *c;
+ 
++#ifdef NVGPU_TX1_PORT
++	c = clk_get(dev_from_gk20a(g), "ref");
++#else
+ 	c = clk_get_sys("gpu_ref", "gpu_ref");
++#endif
+ 	if (IS_ERR(c)) {
+ 		nvgpu_err(g, "failed to get GPCPLL reference clock");
+ 		return 0;

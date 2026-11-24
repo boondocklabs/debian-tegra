@@ -1,0 +1,94 @@
+name: Build TX1 Debian packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kernel image and headers
+        run: bash scripts/build-kernel.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tx1-kernel
+          path: |
+            out/linux-image-*.deb
+            out/linux-headers-*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  module:
+    needs: kernel
+    strategy:
+      matrix:
+        module: [nvmap, nvgpu]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tx1-kernel
+          path: out
+      - name: Build module
+        run: bash scripts/build-modules.sh "${{ matrix.module }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tx1-${{ matrix.module }}
+          path: out/debian-tegra-${{ matrix.module }}-tx1_*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  device-tree:
+    needs: kernel
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tx1-kernel
+          path: out
+      - name: Build GPU and fan device trees
+        run: bash scripts/build-device-tree.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tx1-device-tree
+          path: out/debian-tegra-tx1-device-tree_*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  collect:
+    needs: [module, device-tree]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tx1-*
+          path: packages
+          merge-multiple: true
+      - name: Verify package set
+        run: |
+          set -euo pipefail
+          cd packages
+          test "$(find . -maxdepth 1 -name '*.deb' | wc -l)" -eq 5
+          for deb in *.deb; do
+            test "$(dpkg-deb --field "$deb" Architecture)" = arm64
+            dpkg-deb --field "$deb" Package Version Architecture
+          done
+          sha256sum *.deb > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tx1-debian-packages
+          path: packages/
+          if-no-files-found: error
+          retention-days: 30

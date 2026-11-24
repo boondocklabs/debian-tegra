@@ -1,0 +1,127 @@
+diff --git a/drivers/gpu/nvgpu/Makefile b/drivers/gpu/nvgpu/Makefile
+index 72e0e95..f0045df 100644
+--- a/drivers/gpu/nvgpu/Makefile
++++ b/drivers/gpu/nvgpu/Makefile
+@@ -21,6 +21,19 @@ ccflags-y += $(call cc-option, -Wimplicit-fallthrough=3)
+ ccflags-y += -Wframe-larger-than=2048
+ ccflags-y += -Wno-multichar
+ ccflags-y += -Werror
++ifeq ($(NVGPU_TX1_PORT),1)
++ccflags-y += -DNVGPU_TX1_PORT
++# NVIDIA conftest is not present in the Debian kernel build. These APIs are
++# available in Debian 6.12; keep the compatibility branches selected.
++ccflags-y += -DNV_VM_AREA_STRUCT_HAS_CONST_VM_FLAGS
++ccflags-y += -DNV_CLASS_CREATE_HAS_NO_OWNER_ARG
++ccflags-y += -DNV_CLASS_STRUCT_DEVNODE_HAS_CONST_DEV_ARG
++ccflags-y += -DNV_FD_EMPTY_PRESENT -DNV_FD_FILE_PRESENT
++ccflags-y += -DNV_LINUX_IOSYS_MAP_H_PRESENT
++ccflags-y += -DNV_PLATFORM_DRIVER_STRUCT_REMOVE_RETURNS_VOID
++ccflags-y += -DNV_MODULE_IMPORT_NS_CALLS_STRINGIFY
++ccflags-y += -Wno-error
++endif
+ ccflags-y += -Wno-error=cpp
+ ccflags-y += -Wmissing-prototypes
+ ifeq ($(VERSION),4)
+@@ -1037,8 +1050,10 @@ nvgpu-y += \
+ endif
+ endif
+ 
++ifneq ($(NVGPU_TX1_PORT),1)
+ nvgpu-y += \
+ 	os/linux/platform_ga10b_tegra.o
++endif
+ 
+ ifeq ($(CONFIG_NVS_PRESENT),y)
+ include $(srctree.nvgpu)/nvsched/Makefile.sources
+diff --git a/drivers/gpu/nvgpu/Makefile.linux.configs b/drivers/gpu/nvgpu/Makefile.linux.configs
+index 31d441d..a9038f6 100644
+--- a/drivers/gpu/nvgpu/Makefile.linux.configs
++++ b/drivers/gpu/nvgpu/Makefile.linux.configs
+@@ -182,7 +182,12 @@ ifeq ($(CONFIG_TEGRA_GR_VIRTUALIZATION),y)
+ CONFIG_NVGPU_GR_VIRTUALIZATION := y
+ endif
+ 
++ifeq ($(NVGPU_TX1_PORT),1)
++# The L4T R32 TX1 configuration does not enable NVGPU_VPR.
++CONFIG_NVGPU_VPR := n
++else
+ CONFIG_NVGPU_VPR := y
++endif
+ 
+ # Support Tegra fuse
+ ifeq ($(CONFIG_TEGRA_KFUSE),y)
+diff --git a/drivers/gpu/nvgpu/os/linux/module.c b/drivers/gpu/nvgpu/os/linux/module.c
+index ae083a0..ce80f10 100644
+--- a/drivers/gpu/nvgpu/os/linux/module.c
++++ b/drivers/gpu/nvgpu/os/linux/module.c
+@@ -716,13 +716,17 @@ static struct of_device_id tegra_gk20a_of_match[] = {
+ #ifdef CONFIG_TEGRA_GK20A
+ 	{ .compatible = "nvidia,tegra210-gm20b",
+ 		.data = &gm20b_tegra_platform },
++#ifdef NVGPU_TX1_PORT
++	{ .compatible = "nvidia,gm20b",
++		.data = &gm20b_tegra_platform },
++#endif
+ 	{ .compatible = "nvidia,gv11b",
+ 		.data = &gv11b_tegra_platform },
+ #ifdef CONFIG_NVGPU_GR_VIRTUALIZATION
+ 	{ .compatible = "nvidia,gv11b-vgpu",
+ 		.data = &gv11b_vgpu_tegra_platform},
+ #endif
+-#if defined(CONFIG_NVGPU_HAL_NON_FUSA) && defined(CONFIG_NVGPU_NON_FUSA)
++#if defined(CONFIG_NVGPU_HAL_NON_FUSA) && defined(CONFIG_NVGPU_NON_FUSA) && !defined(NVGPU_TX1_PORT)
+ 	{ .compatible = "nvidia,ga10b",
+ 		.data = &ga10b_tegra_platform},
+ #ifdef CONFIG_NVGPU_GR_VIRTUALIZATION
+@@ -2051,7 +2055,7 @@ int nvgpu_remove(struct device *dev)
+ 	return err;
+ }
+ 
+-static int __exit gk20a_remove(struct platform_device *pdev)
++static int gk20a_remove(struct platform_device *pdev)
+ {
+ 	int err;
+ 	struct device *dev = &pdev->dev;
+@@ -2080,12 +2084,12 @@ static int __exit gk20a_remove(struct platform_device *pdev)
+ }
+ 
+ #if defined(NV_PLATFORM_DRIVER_STRUCT_REMOVE_RETURNS_VOID) /* Linux v6.11 */
+-static inline void __exit gk20a_remove_wrapper(struct platform_device *pdev)
++static inline void gk20a_remove_wrapper(struct platform_device *pdev)
+ {
+ 	gk20a_remove(pdev);
+ }
+ #else
+-static inline int __exit gk20a_remove_wrapper(struct platform_device *pdev)
++static inline int gk20a_remove_wrapper(struct platform_device *pdev)
+ {
+ 	return gk20a_remove(pdev);
+ }
+@@ -2131,5 +2135,5 @@ MODULE_IMPORT_NS(DMA_BUF);
+ #endif
+-#ifdef CONFIG_GK20A_DEVFREQ
++#if defined(CONFIG_GK20A_DEVFREQ) && !defined(NVGPU_TX1_PORT)
+ MODULE_SOFTDEP("pre: governor_pod_scaling");
+ #endif
+ MODULE_LICENSE("GPL v2");
+diff --git a/drivers/gpu/nvgpu/os/linux/soc.c b/drivers/gpu/nvgpu/os/linux/soc.c
+index 294f01f..64e970c 100644
+--- a/drivers/gpu/nvgpu/os/linux/soc.c
++++ b/drivers/gpu/nvgpu/os/linux/soc.c
+@@ -11,6 +11,11 @@
+  * more details.
+  */
+ 
++#ifdef NVGPU_TX1_PORT
++/* TX1 does not use the later Tegra hypervisor or IPA translation APIs. */
++#include <nvgpu/soc.h>
++u64 nvgpu_get_pa_from_ipa(struct gk20a *g, u64 ipa) { return ipa; }
++#else
+ #include <linux/version.h>
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
+ #include <soc/tegra/chip-id.h>
+@@ -156,3 +161,4 @@ u64 nvgpu_get_pa_from_ipa(struct gk20a *g, u64 ipa)
+ 	}
+ 	return ipa;
+ }
++#endif /* NVGPU_TX1_PORT */
