@@ -92,13 +92,16 @@ automatic boot-failure fallback. The generated image passed an offline build,
 filesystem, and partition check; this particular image builder has not yet
 been physically boot-tested.
 
-Without TX1 firmware, the image defaults to the safe boot entry that keeps
-`nvgpu` unloaded. Pass `--firmware-dir DIR` with a local firmware tree
-containing `tegra21x/pmu_sig.bin` to copy GPU firmware and default to the
-GPU-enabled entry. If that tree also contains `brcm/fw_bcmdhd.bin` and
-`brcm/nvram.txt`, the builder installs the BCM4354 Wi-Fi aliases. Firmware and
-CUDA userspace are not downloaded or distributed by this repository. Debian
-package updates within the same kernel ABI use APT; a new kernel ABI requires
+By default, the builder downloads NVIDIA's Jetson Linux R32.7.6 TX1 BSP,
+checks its pinned SHA-256, and extracts the GM20B GPU, BCM4354 Wi-Fi, and
+XUSB firmware into the image. The GPU-enabled boot entry is the default;
+the menu also offers a safe entry that keeps `nvgpu` unloaded. Use
+`--firmware-dir DIR` to supply a local firmware tree instead, or
+`--no-firmware` to skip firmware and default to the safe entry. The BSP is
+cached locally under the ignored `cache/` directory. Firmware is included
+only in the image you build locally; it is not committed, built in CI, or
+published in the APT repository. CUDA userspace is separate. Debian package
+updates within the same kernel ABI use APT; a new kernel ABI requires
 updating the boot entry or rebuilding the image.
 
 ## CUDA userspace
@@ -111,17 +114,14 @@ this repository does not contain or redistribute them.
 
 ## APT repository
 
-After a successful build on `main`, the Pages workflow publishes the five
-packages as a signed Debian 13 ARM64 APT repository at
-<https://boondocklabs.github.io/debian-tegra/>. The repository signing key is
-exported alongside the packages. This requires the GitHub Pages source to be
-set to **GitHub Actions** and a dedicated, unencrypted ASCII-armored private
-key in the `APT_GPG_PRIVATE_KEY` Actions secret. The key is used only to sign
-the repository metadata; it is not included in the published files.
+The signed Debian 13 ARM64 repository at
+<https://boondocklabs.github.io/debian-tegra/> provides the TX1 kernel image,
+headers, nvmap, nvgpu, and device tree packages. The SD image builder adds
+this source and installs the pinned package versions for you.
+
 The archive key fingerprint is
 `0F24 8B4E 0026 1A42 AC3E CC19 C078 7BB2 FD9D 04B6`.
-
-On a Debian 13 TX1 system, add the repository with:
+On a Debian 13 TX1 system, add the repository and packages with:
 
 ```sh
 curl -fsSL https://boondocklabs.github.io/debian-tegra/archive-keyring.gpg \
@@ -129,7 +129,10 @@ curl -fsSL https://boondocklabs.github.io/debian-tegra/archive-keyring.gpg \
 echo 'deb [arch=arm64 signed-by=/usr/share/keyrings/debian-tegra-archive-keyring.gpg] https://boondocklabs.github.io/debian-tegra/ trixie main' \
   | sudo tee /etc/apt/sources.list.d/debian-tegra.list
 sudo apt update
+sudo apt install linux-image-6.12.118-tegra-tx1 \
+  linux-headers-6.12.118-tegra-tx1 debian-tegra-nvmap-tx1 \
+  debian-tegra-nvgpu-tx1 debian-tegra-tx1-device-tree
 ```
 
-The repository contains the kernel image, headers, nvmap, nvgpu, and device
-tree packages. It does not distribute CUDA userspace or firmware.
+After setup, use `sudo apt update && sudo apt upgrade` for package updates.
+The repository does not include CUDA userspace or firmware.
