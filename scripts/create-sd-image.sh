@@ -16,6 +16,7 @@ Options:
   --root-password          Prompt for a local root password
   --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
   --no-firmware           Skip firmware and default to the safe boot entry
+  --no-cuda               Skip R36.5.1 CUDA driver and CUDA 12.6 runtime
   --output NAME           Image filename under out/ (default: debian-tegra-tx1-sd.img)
   --size-mib N            Image size in MiB, at least 2048 (default: 4096)
   --hostname NAME         Device hostname (default: jetson-tx1)
@@ -26,7 +27,7 @@ EOF
 if [[ ${1:-} != --container ]]; then
   authorized_keys= firmware_dir= wifi_ssid= wifi_password_file=
   output=debian-tegra-tx1-sd.img size_mib=4096 hostname=jetson-tx1
-  force=0 no_firmware=0 wifi_hidden=0 root_password_enabled=0
+  force=0 no_firmware=0 no_cuda=0 wifi_hidden=0 root_password_enabled=0
   wifi_temp_file= root_temp_file=
   cleanup_secret_files() {
     if [[ -n $wifi_temp_file ]]; then rm -f "$wifi_temp_file"; fi
@@ -66,6 +67,7 @@ if [[ ${1:-} != --container ]]; then
       --root-password) root_password_enabled=1; shift ;;
       --firmware-dir) firmware_dir=${2:?missing firmware directory}; shift 2 ;;
       --no-firmware) no_firmware=1; shift ;;
+      --no-cuda) no_cuda=1; shift ;;
       --output) output=${2:?missing image name}; shift 2 ;;
       --size-mib) size_mib=${2:?missing size}; shift 2 ;;
       --hostname) hostname=${2:?missing hostname}; shift 2 ;;
@@ -171,6 +173,30 @@ if [[ ${1:-} != --container ]]; then
     }
     mounts+=(--mount "type=bind,source=$(pwd)/$brcm_package,target=/input/brcm-firmware.deb,readonly")
   fi
+  if [[ $no_cuda == 0 ]]; then
+    mkdir -p cache
+    cuda_driver=cache/nvidia-l4t-cuda_36.5.1-20260427132545_arm64.deb
+    cuda_driver_url=https://repo.download.nvidia.com/jetson/t234/pool/main/n/nvidia-l4t-cuda/$(basename "$cuda_driver")
+    cuda_driver_sha256=e2cba2ecb98de3cc4f3386acd93c9b66a6ce4c2894cab65367c743ece309c482
+    cuda_runtime=cache/cuda-cudart-12-6_12.6.77-1_arm64.deb
+    cuda_runtime_url=https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/$(basename "$cuda_runtime")
+    cuda_runtime_sha256=e86f78916c669e4bbf801977602f1772ffbe26499f0fd4f918ee2d1af7a7a9e0
+    for package in cuda_driver cuda_runtime; do
+      path=${!package}
+      url_var=${package}_url
+      hash_var=${package}_sha256
+      if [[ ! -s $path ]]; then
+        curl --fail --location --retry 3 --output "$path.partial" "${!url_var}"
+        mv -f "$path.partial" "$path"
+      fi
+      actual_sha256=$(openssl dgst -sha256 "$path" | awk '{print $NF}')
+      [[ $actual_sha256 == "${!hash_var}" ]] || {
+        echo "NVIDIA CUDA SHA-256 mismatch: $path" >&2; exit 1;
+      }
+    done
+    mounts+=(--mount "type=bind,source=$(pwd)/$cuda_driver,target=/input/cuda-driver.deb,readonly"
+             --mount "type=bind,source=$(pwd)/$cuda_runtime,target=/input/cuda-runtime.deb,readonly")
+  fi
   docker build --platform linux/arm64 -f Containerfile.sd -t debian-tegra-sd-builder .
   docker run --rm --privileged --platform linux/arm64 \
     -e IMAGE_NAME="$output" -e IMAGE_SIZE_MIB="$size_mib" \
@@ -194,7 +220,7 @@ part_size_mib=$((IMAGE_SIZE_MIB - 2))
 
 mkdir -p "$root" /project/out
 debootstrap --arch=arm64 --variant=minbase \
-  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd,gzip \
+  --include=systemd-sysv,systemd-timesyncd,udev,dbus,avahi-daemon,openssh-server,sudo,network-manager,wpasupplicant,iproute2,iputils-ping,ca-certificates,kmod,initramfs-tools,busybox-static,e2fsprogs,zstd,gzip \
   trixie "$root" https://deb.debian.org/debian
 
 install -d "$root/usr/share/keyrings" "$root/etc/apt/sources.list.d"
@@ -248,6 +274,21 @@ chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   "$NVMAP_PACKAGE_NAME=$NVMAP_PACKAGE_VERSION" \
   "$NVGPU_PACKAGE_NAME=$NVGPU_PACKAGE_VERSION" \
   "debian-tegra-tx1-device-tree=$DEBIAN_KERNEL_VERSION"
+
+if [[ -f /input/cuda-driver.deb && -f /input/cuda-runtime.deb ]]; then
+  cuda_driver_dir=$root/opt/debian-tegra/nvidia-r36.5.1
+  cuda_runtime_dir=$root/opt/debian-tegra/cuda-12.6
+  mkdir -p "$cuda_driver_dir" "$cuda_runtime_dir"
+  dpkg-deb -x /input/cuda-driver.deb "$cuda_driver_dir"
+  dpkg-deb -x /input/cuda-runtime.deb "$cuda_runtime_dir"
+  test -s "$cuda_driver_dir/usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1.1"
+  test -s "$cuda_runtime_dir/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcudart.so.12.6.77"
+  cat > "$root/etc/ld.so.conf.d/debian-tegra-cuda.conf" <<'EOF'
+/opt/debian-tegra/nvidia-r36.5.1/usr/lib/aarch64-linux-gnu/nvidia
+/opt/debian-tegra/cuda-12.6/usr/local/cuda-12.6/targets/aarch64-linux/lib
+EOF
+  chroot "$root" ldconfig
+fi
 
 gpu_default=debian-tegra-safe
 firmware_source=
@@ -473,7 +514,7 @@ SUBSYSTEM=="misc", KERNEL=="nvmap", GROUP="video", MODE="0660"
 SUBSYSTEM=="nvidia-gpu", KERNEL=="nvhost-*", GROUP="video", MODE="0660"
 SUBSYSTEM=="nvidia-gpu-v2", GROUP="video", MODE="0660"
 EOF
-chroot "$root" systemctl enable NetworkManager avahi-daemon ssh ssh-host-keys \
+chroot "$root" systemctl enable NetworkManager wpa_supplicant avahi-daemon ssh ssh-host-keys \
   systemd-timesyncd serial-getty@ttyS0
 chroot "$root" systemctl set-default multi-user.target
 rm -f "$root/etc/ssh/ssh_host_"* "$root/usr/sbin/policy-rc.d"

@@ -124,17 +124,25 @@ the menu also offers a safe entry that keeps `nvgpu` unloaded. Use
 `--no-firmware` to skip firmware and default to the safe entry. Downloads stay
 under the ignored `cache/` directory. Firmware stays in your local cache and
 image; it is not committed, built in CI, or published in the APT repository.
-CUDA userspace is separate. Debian package
-updates within the same kernel ABI use APT; a new kernel ABI requires
+Debian package updates within the same kernel ABI use APT; a new kernel ABI requires
 updating the boot entry or rebuilding the image.
 
 ## CUDA userspace
 
-CUDA needs matching NVIDIA userspace libraries and TX1 firmware in addition
-to these kernel packages. The tested combination used R36.5.1 `libcuda` from
-NVIDIA's `nvidia-l4t-cuda` package and CUDA 12.6.77 `libcudart` from NVIDIA's
-`cuda-cudart-12-6` package. Those binaries are fetched from NVIDIA separately;
-this repository does not contain or redistribute them.
+By default, the SD image builder downloads NVIDIA's R36.5.1 `nvidia-l4t-cuda`
+package and CUDA 12.6.77 `cuda-cudart-12-6` package, checks pinned SHA-256
+hashes, and extracts their libraries into `/opt/debian-tegra/`. It configures
+the dynamic linker so applications can load `libcuda.so.1` and
+`libcudart.so.12`. Use `--no-cuda` to omit them. The downloads stay in the
+ignored `cache/` directory and are included only in your locally built image;
+this repository, CI, and the APT repository do not distribute them. The
+libraries are not registered as Debian packages, so rebuilding the image is
+required to change their versions.
+
+This is the combination tested on a physical TX1 for device enumeration,
+memory transfers, and a small kernel launch. CUDA 12.6's separate libraries,
+including cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, NVRTC, and cuDNN, are
+not included or validated by this image builder.
 
 ## APT repository
 
