@@ -505,7 +505,7 @@ struct Context;
 struct Tensor;
 struct Filter;
 struct Convolution;
-enum DataType { Float = 0 };
+enum DataType { Float = 0, Half = 2 };
 enum Format { NCHW = 0 };
 enum Mode { CrossCorrelation = 1 };
 enum Algorithm { ImplicitGemm = 0 };
@@ -567,62 +567,70 @@ int benchmark_cudnn(cudaStream_t stream, int seconds) {
   constexpr size_t input_count = channels * width * width;
   constexpr size_t filter_count = channels * channels * filter_size * filter_size;
   constexpr size_t output_count = channels * output_width * output_width;
-  Context *handle;
-  Tensor *input, *output;
-  Filter *filter;
-  Convolution *conv;
-  float *x, *w, *y;
-  CHECK(check_cudnn(cudnnCreate(&handle)));
-  CHECK(check_cudnn(cudnnSetStream(handle, stream)));
-  CHECK(check_cudnn(cudnnCreateTensorDescriptor(&input)));
-  CHECK(check_cudnn(cudnnCreateTensorDescriptor(&output)));
-  CHECK(check_cudnn(cudnnSetTensor4dDescriptor(input, NCHW, Float,
-                                             1, channels, width, width)));
-  CHECK(check_cudnn(cudnnSetTensor4dDescriptor(output, NCHW, Float, 1, channels,
-                                             output_width, output_width)));
-  CHECK(check_cudnn(cudnnCreateFilterDescriptor(&filter)));
-  CHECK(check_cudnn(cudnnSetFilter4dDescriptor(filter, Float, NCHW, channels,
-                                             channels, filter_size, filter_size)));
-  CHECK(check_cudnn(cudnnCreateConvolutionDescriptor(&conv)));
-  CHECK(check_cudnn(cudnnSetConvolution2dDescriptor(conv, 0, 0, 1, 1, 1, 1,
-                                                  CrossCorrelation, Float)));
-  size_t bytes;
-  void *workspace = nullptr;
-  CHECK(check_cudnn(cudnnGetConvolutionForwardWorkspaceSize(
-      handle, input, filter, conv, output, ImplicitGemm, &bytes)));
-  if (bytes)
-    CHECK(cudaMalloc(&workspace, bytes));
-  CHECK(cudaMalloc(&x, input_count * sizeof(float)));
-  CHECK(cudaMalloc(&w, filter_count * sizeof(float)));
-  CHECK(cudaMalloc(&y, output_count * sizeof(float)));
-  std::vector<float> values(input_count, 1.0f), weights(filter_count, 2.0f);
-  CHECK(cudaMemcpy(x, values.data(), input_count * sizeof(float), cudaMemcpyHostToDevice));
-  CHECK(cudaMemcpy(w, weights.data(), filter_count * sizeof(float), cudaMemcpyHostToDevice));
+  auto run = [&](auto input_value, DataType type, const char *precision) {
+    using T = decltype(input_value);
+    Context *handle;
+    Tensor *input, *output;
+    Filter *filter;
+    Convolution *conv;
+    T *x, *w, *y;
+    CHECK(check_cudnn(cudnnCreate(&handle)));
+    CHECK(check_cudnn(cudnnSetStream(handle, stream)));
+    CHECK(check_cudnn(cudnnCreateTensorDescriptor(&input)));
+    CHECK(check_cudnn(cudnnCreateTensorDescriptor(&output)));
+    CHECK(check_cudnn(cudnnSetTensor4dDescriptor(input, NCHW, type,
+                                               1, channels, width, width)));
+    CHECK(check_cudnn(cudnnSetTensor4dDescriptor(output, NCHW, type, 1, channels,
+                                               output_width, output_width)));
+    CHECK(check_cudnn(cudnnCreateFilterDescriptor(&filter)));
+    CHECK(check_cudnn(cudnnSetFilter4dDescriptor(filter, type, NCHW, channels,
+                                               channels, filter_size, filter_size)));
+    CHECK(check_cudnn(cudnnCreateConvolutionDescriptor(&conv)));
+    CHECK(check_cudnn(cudnnSetConvolution2dDescriptor(conv, 0, 0, 1, 1, 1, 1,
+                                                    CrossCorrelation, type)));
+    size_t bytes;
+    void *workspace = nullptr;
+    CHECK(check_cudnn(cudnnGetConvolutionForwardWorkspaceSize(
+        handle, input, filter, conv, output, ImplicitGemm, &bytes)));
+    if (bytes)
+      CHECK(cudaMalloc(&workspace, bytes));
+    CHECK(cudaMalloc(&x, input_count * sizeof(T)));
+    CHECK(cudaMalloc(&w, filter_count * sizeof(T)));
+    CHECK(cudaMalloc(&y, output_count * sizeof(T)));
+    std::vector<T> values(input_count, input_value), weights(filter_count, T(2.0f));
+    CHECK(cudaMemcpy(x, values.data(), input_count * sizeof(T), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(w, weights.data(), filter_count * sizeof(T), cudaMemcpyHostToDevice));
 
-  const float one = 1.0f, zero = 0.0f;
-  float ms;
-  CHECK(benchmark_ms(stream, seconds, [&] {
-    return check_cudnn(cudnnConvolutionForward(
-        handle, &one, input, x, filter, w, conv, ImplicitGemm, workspace,
-        bytes, &zero, output, y));
-  }, ms));
+    const float one = 1.0f, zero = 0.0f;
+    float ms;
+    CHECK(benchmark_ms(stream, seconds, [&] {
+      return check_cudnn(cudnnConvolutionForward(
+          handle, &one, input, x, filter, w, conv, ImplicitGemm, workspace,
+          bytes, &zero, output, y));
+    }, ms));
 
-  CHECK(cudaMemcpy(values.data(), y, output_count * sizeof(float), cudaMemcpyDeviceToHost));
-  constexpr int products = channels * filter_size * filter_size;
-  EXPECT(std::all_of(values.begin(), values.begin() + output_count,
-                     [](float value) { return value == 2 * products; }));
-  CHECK(cudaFree(y));
-  CHECK(cudaFree(w));
-  CHECK(cudaFree(x));
-  CHECK(cudaFree(workspace));
-  CHECK(check_cudnn(cudnnDestroyConvolutionDescriptor(conv)));
-  CHECK(check_cudnn(cudnnDestroyFilterDescriptor(filter)));
-  CHECK(check_cudnn(cudnnDestroyTensorDescriptor(output)));
-  CHECK(check_cudnn(cudnnDestroyTensorDescriptor(input)));
-  CHECK(check_cudnn(cudnnDestroy(handle)));
-  std::printf("cuDNN %zu FP32 convolution (1x32x64x64, 32 3x3 filters): "
-              "%.3f ms, %.2f GFLOP/s\n", cudnnGetVersion(), ms,
-              2.0 * output_count * products / (ms * 1e6));
+    CHECK(cudaMemcpy(values.data(), y, output_count * sizeof(T), cudaMemcpyDeviceToHost));
+    constexpr int products = channels * filter_size * filter_size;
+    EXPECT(std::all_of(values.begin(), values.begin() + output_count,
+                       [](T value) { return static_cast<float>(value) == 2.0f * products; }));
+    CHECK(cudaFree(y));
+    CHECK(cudaFree(w));
+    CHECK(cudaFree(x));
+    CHECK(cudaFree(workspace));
+    CHECK(check_cudnn(cudnnDestroyConvolutionDescriptor(conv)));
+    CHECK(check_cudnn(cudnnDestroyFilterDescriptor(filter)));
+    CHECK(check_cudnn(cudnnDestroyTensorDescriptor(output)));
+    CHECK(check_cudnn(cudnnDestroyTensorDescriptor(input)));
+    CHECK(check_cudnn(cudnnDestroy(handle)));
+    std::printf("cuDNN %zu %s convolution (1x32x64x64, 32 3x3 filters): "
+                "%.3f ms, %.2f GFLOP/s\n", cudnnGetVersion(), precision, ms,
+                2.0 * output_count * products / (ms * 1e6));
+    return 0;
+  };
+
+  // The cuDNN scaling factors are float for both FP32 and FP16 tensors.
+  CHECK(run(1.0f, Float, "FP32"));
+  CHECK(run(__half(1.0f), Half, "FP16"));
   return 0;
 }
 

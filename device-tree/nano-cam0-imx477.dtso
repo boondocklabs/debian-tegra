@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			cam0_xclk: clock-cam0 {
+				compatible = "fixed-clock";
+				#clock-cells = <0>;
+				clock-frequency = <24000000>;
+			};
+
+			cam0_vana: regulator-cam0-vana {
+				compatible = "regulator-fixed";
+				regulator-name = "cam0-vana";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+				vin-supply = <&vdd_3v3_sys>;
+			};
+
+			cam0_vdig: regulator-cam0-vdig {
+				compatible = "regulator-fixed";
+				regulator-name = "cam0-vdig";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+				vin-supply = <&vdd_3v3_sys>;
+			};
+
+			cam0_vddl: regulator-cam0-vddl {
+				compatible = "regulator-fixed";
+				regulator-name = "cam0-vddl";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				vin-supply = <&vdd_3v3_sys>;
+			};
+
+			i2c-mux-camera {
+				compatible = "i2c-mux-gpio";
+				#address-cells = <1>;
+				#size-cells = <0>;
+				i2c-parent = <&nano_camera_i2c>;
+				mux-gpios = <&gpio 64 0>; /* PI0 */
+
+				i2c@0 {
+					reg = <0>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					camera@1a {
+						compatible = "sony,imx477";
+						reg = <0x1a>;
+						clocks = <&cam0_xclk>;
+						VANA-supply = <&cam0_vana>;
+						VDIG-supply = <&cam0_vdig>;
+						VDDL-supply = <&cam0_vddl>;
+						reset-gpios = <&gpio 151 0>; /* PS7, high enables module */
+
+						port {
+							cam0_out: endpoint {
+								clock-lanes = <0>;
+								data-lanes = <1 2>;
+								link-frequencies = /bits/ 64 <450000000>;
+								remote-endpoint = <&cam0_csi_in>;
+							};
+						};
+					};
+				};
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/host1x@50000000/vi@54080000/csi@838";
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			channel@0 {
+				reg = <0>;
+				nvidia,mipi-calibrate = <&mipi 0x1>; /* CSI-A */
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						cam0_csi_in: endpoint {
+							data-lanes = <1 2>;
+							remote-endpoint = <&cam0_out>;
+						};
+					};
+
+					port@1 {
+						reg = <1>;
+						cam0_csi_out: endpoint {
+							remote-endpoint = <&cam0_vi_in>;
+						};
+					};
+				};
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/host1x@50000000/vi@54080000";
+		__overlay__ {
+			/* Tegra VI requires an explicit port number for CAM0. */
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					cam0_vi_in: endpoint {
+						remote-endpoint = <&cam0_csi_out>;
+					};
+				};
+			};
+		};
+	};
+};

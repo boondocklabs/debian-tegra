@@ -17,7 +17,7 @@ Debian console over HDMI.
 | Power monitoring | INA3221 hwmon. Nano monitors 5 V input, CPU, and GPU. TX1 lists the module monitor and two P2597 carrier monitors. |
 | Overcurrent telemetry | jtop reads Tegra210 OC1–OC4 hardware counters through `soctherm_oc` hwmon. |
 | Operating system | Debian 13 (Trixie), arm64 |
-| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra12` |
+| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra13` |
 | Boot firmware | Jetson Linux R32.7.6 CBoot and U-Boot 2020.04, with SD boot via extlinux. TX1 boots from eMMC firmware and Nano from QSPI-NOR firmware. |
 | TX1 display and peripherals | HDMI DRM, P2597 PWM fan, BCM4354 Wi-Fi and Bluetooth, optional OV5693 CSI camera |
 | TX1 memory scaling | RAM code 0, ACTMON at 408–800 MHz or up to 1,600 MHz on the watchdog-guarded entry |
@@ -42,7 +42,7 @@ physical TX1 Developer Kit. GitHub Actions verifies the package builds.
 | `debian-tegra-nvmap-tx1` | Patched NVIDIA nvmap module |
 | `debian-tegra-nvgpu-tx1` | Patched NVIDIA nvgpu module for GM20B. Nano support starts with revision `6.12.118-1+tegra6`. |
 | `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI and EMC overlays |
-| `debian-tegra-nano-device-tree` | GPU-enabled P3450-0000 DTBs with HDMI DDC, INA3221 power monitoring, and watchdog-guarded EMC support |
+| `debian-tegra-nano-device-tree` | GPU-enabled P3450-0000 DTBs with HDMI DDC, INA3221 power monitoring, watchdog-guarded EMC, and optional IMX477 CAM0 |
 
 The kernel comes from Debian's `6.12.118-1` source package. Its URL and
 SHA-256 are pinned in [build-kernel.sh](scripts/build-kernel.sh). The
@@ -143,6 +143,21 @@ the build can still be started manually from GitHub Actions.
 The device-tree packages install their DTBs under
 `/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/`. Select the matching board
 DTB in the bootloader configuration.
+
+## Expansion header interfaces
+
+The shared kernel includes Tegra210 pinctrl and the GPIO character-device
+interface (`/dev/gpiochip*`), plus Tegra SPI, I²C, UART, and PWM support.
+The Tegra210 I²S modules include the audio hub, DMA interface, and graph-card
+driver. The Nano 4 GB expansion header exposes SPI1 (`spi@7000d400`),
+SPI2 (`spi@7000d600`), and I²S4 (`i2s@702d1300`). Set the pin functions
+and describe the SPI device or I²S codec in a device tree for your carrier
+and peripheral. For raw SPI access, bind `spidev` to the configured SPI
+device using its device ID or the kernel's `driver_override` interface.
+
+External GPIO-controlled switches can use the Linux `gpio-mux` binding with
+the generic SPI or I²C mux driver. The Nano camera’s I²C mux uses its own
+`i2c-mux-gpio` binding.
 
 ## Bootable SD images
 
@@ -277,6 +292,40 @@ results are included [below](#cuda-benchmarks). For a smaller initial boot
 image, add `--no-cuda --size-mib 2048`. To use unpublished packages from a
 local build, add `--local-packages out`.
 
+#### Nano CAM0 with Arducam UC-698
+
+Connect the UC-698 IMX477 to CAM0 on the P3449 B01 carrier with the
+appropriate 15-pin-to-22-pin CSI cable while the Nano is powered down.
+Select **Nano EMC + CAM0 IMX477** in the U-Boot menu. The entry uses CSI-A
+and the first channel of the carrier's camera I²C mux. Debian exposes raw
+Bayer capture through V4L2.
+The camera entry reserves 192 MiB of contiguous DMA memory for capture.
+
+On an existing image, the matching DTB is
+`tegra210-p3450-0000-nvgpu-emc-cam0-imx477.dtb` under the kernel DTB
+directory. Copy it to `/boot` and use it as the `FDT` in a copy of the
+Nano EMC boot entry. Add `cma=192M` to that entry’s `APPEND` line.
+Use `media-ctl -p` from `v4l-utils` to inspect the camera pipeline. On the
+test Nano, the UC-698 captured 2028×1080 RAW10 and 4056×3040 RAW12 through
+`/dev/video0`. To test full-resolution capture:
+
+```sh
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=4056,height=3040,pixelformat=RG12 \
+  --stream-mmap=4 --stream-count=6 --stream-to=/dev/null
+```
+
+For 30 or 60 fps on the tested Nano, use 8-bit Bayer (`RGGB`). Apply
+the `vertical_blanking` control after selecting the capture format.
+
+| Capture mode | `vertical_blanking` for 30 fps | `vertical_blanking` for 60 fps |
+| --- | ---: | ---: |
+| 2028×1080 RAW8 | 2389 | 655 |
+| 2028×1520 RAW8 | 1949 | 215 |
+
+Both rates passed frame capture in these modes. RAW10 reached 30 and
+60 fps at 2028×1080 in short tests, with intermittent frame errors in
+longer runs. Full-resolution RAW12 captured at about 10 fps.
+
 #### Nano power and overcurrent monitoring
 
 The onboard INA3221 exposes voltage and current for the 5 V input, GPU,
@@ -376,22 +425,31 @@ its default ACTMON entry and the GPU scaling up to 921.6 MHz. EMC stayed
 at 1,600 MHz during the sustained run and was back at 204 MHz after three
 seconds idle.
 
-| Workload | TX1 ACTMON up to 800 MHz | TX1 fixed 1,600 MHz | TX1 ACTMON up to 1,600 MHz | Nano ACTMON up to 1,600 MHz |
-| --- | ---: | ---: | ---: | ---: |
-| CUDA 32 MiB device-to-device copy | 4.33 GB/s | 9.17 GB/s | 9.10 GB/s | 8.62 GB/s |
-| cuBLAS 1024 × 1024 FP32 SGEMM | 302.18 GFLOP/s | 386.72 GFLOP/s | 384.66 GFLOP/s | 180.04 GFLOP/s |
-| cuBLAS 1024 × 1024 FP16 HGEMM | — | — | **869.52 GFLOP/s** | 407.93 GFLOP/s |
-| cuFFT FP32 C2C, length 4096, batch 64 | 125,650 transforms/s | 253,327 transforms/s | 251,232 transforms/s | 174,866 transforms/s |
-| cuRAND 1,048,576 uniform FP32 values | 1.84 Gvalues/s | 3.78 Gvalues/s | 3.83 Gvalues/s | 3.94 Gvalues/s |
-| cuSOLVER 512 × 512 FP32 Cholesky | 16.00 GFLOP/s | 22.00 GFLOP/s | 22.00 GFLOP/s | 17.90 GFLOP/s |
-| cuSPARSE FP32 CSR SpMV, 1,835,008 nonzeros | 0.81 Gnonzeros/s | 1.56 Gnonzeros/s | 1.56 Gnonzeros/s | 1.18 Gnonzeros/s |
-| cuDNN FP32 3 × 3 convolution, 32 input and output channels | 164.32 GFLOP/s | 166.78 GFLOP/s | 166.75 GFLOP/s | 80.22 GFLOP/s |
-| NVRTC SM 5.3 SAXPY compilation | 104.23 ms | 95.03 ms | 94.58 ms | 99.27 ms |
+| Workload | TX1 ACTMON up to 800 MHz | TX1 fixed 1,600 MHz | TX1 ACTMON up to 1,600 MHz | Nano ACTMON up to 1,600 MHz | TX1 cuDNN rerun at 1,600 MHz EMC |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CUDA 32 MiB device-to-device copy | 4.33 GB/s | 9.17 GB/s | 9.10 GB/s | 8.62 GB/s | — |
+| cuBLAS 1024 × 1024 FP32 SGEMM | 302.18 GFLOP/s | 386.72 GFLOP/s | 384.66 GFLOP/s | 180.04 GFLOP/s | — |
+| cuBLAS 1024 × 1024 FP16 HGEMM | — | — | **869.52 GFLOP/s** | 407.93 GFLOP/s | — |
+| cuFFT FP32 C2C, length 4096, batch 64 | 125,650 transforms/s | 253,327 transforms/s | 251,232 transforms/s | 174,866 transforms/s | — |
+| cuRAND 1,048,576 uniform FP32 values | 1.84 Gvalues/s | 3.78 Gvalues/s | 3.83 Gvalues/s | 3.94 Gvalues/s | — |
+| cuSOLVER 512 × 512 FP32 Cholesky | 16.00 GFLOP/s | 22.00 GFLOP/s | 22.00 GFLOP/s | 17.90 GFLOP/s | — |
+| cuSPARSE FP32 CSR SpMV, 1,835,008 nonzeros | 0.81 Gnonzeros/s | 1.56 Gnonzeros/s | 1.56 Gnonzeros/s | 1.18 Gnonzeros/s | — |
+| cuDNN FP32 3 × 3 convolution, 32 input and output channels | 164.32 GFLOP/s | 166.78 GFLOP/s | 166.75 GFLOP/s | 80.22 GFLOP/s | 60.85 GFLOP/s |
+| cuDNN FP16 3 × 3 convolution, 32 input and output channels | — | — | — | 50.30 GFLOP/s | 29.07 GFLOP/s |
+| NVRTC SM 5.3 SAXPY compilation | 104.23 ms | 95.03 ms | 94.58 ms | 99.27 ms | — |
 
 D2D throughput counts payload bytes copied. Each copy reads the payload and
 writes it, so 9.17 GB/s of payload corresponds to 18.34 GB/s of effective
 read-plus-write bandwidth. In the same automatic-scaling run, FP16 HGEMM
 took 2.470 ms versus 5.583 ms for FP32 SGEMM, a 2.26× throughput gain.
+
+The Nano FP16 result comes from a five-second run that measured 0.883 ms
+for FP32 and 1.409 ms for FP16. The TX1 rerun used 15 seconds per workload
+with ACTMON and measured 1.164 ms for FP32 and 2.437 ms for FP16. All 75
+clock samples in each TX1 convolution pass showed a 998.4 MHz GPU clock
+and 1,600 MHz EMC. Both boards used the same NCHW input (1 × 32 × 64 × 64),
+32 filters of size 3 × 3, and implicit GEMM. The benchmark checks every
+output element and uses FP16 tensors and accumulation for the FP16 case.
 
 The GPU workloads warm up and use CUDA events to time at least five batches
 of 20 operations. The reported latency is the median of the per-batch

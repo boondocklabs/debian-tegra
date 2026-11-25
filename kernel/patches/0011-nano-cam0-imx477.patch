@@ -1,0 +1,105 @@
+Subject: [PATCH] media: integrate IMX477 support for Jetson Nano CAM0
+
+Build the pinned Raspberry Pi Linux 6.12 sensor driver. Use Debian
+6.12's generic 8-bit embedded metadata code and propagate reset GPIO
+errors before powering the sensor. Export the Nano VI I2C controller
+for the camera mux overlay.
+
+diff --git a/arch/arm64/boot/dts/nvidia/tegra210-p3450-0000.dts b/arch/arm64/boot/dts/nvidia/tegra210-p3450-0000.dts
+--- a/arch/arm64/boot/dts/nvidia/tegra210-p3450-0000.dts
++++ b/arch/arm64/boot/dts/nvidia/tegra210-p3450-0000.dts
+@@ -98,7 +98,7 @@
+ 			status = "okay";
+ 		};
+ 
+-		i2c@546c0000 {
++		nano_camera_i2c: i2c@546c0000 {
+ 			status = "okay";
+ 		};
+ 	};
+diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -265,6 +265,14 @@
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called imx415.
+ 
++config VIDEO_IMX477
++	tristate "Sony IMX477 sensor support"
++	depends on OF_GPIO
++	select V4L2_CCI_I2C
++	help
++	  Enable the Video4Linux2 sensor driver for Sony IMX477 and IMX378
++	  cameras. Build it as a module named imx477 by selecting M.
++
+ config VIDEO_MAX9271_LIB
+ 	tristate
+ 
+diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -59,6 +59,7 @@
+ obj-$(CONFIG_VIDEO_IMX355) += imx355.o
+ obj-$(CONFIG_VIDEO_IMX412) += imx412.o
+ obj-$(CONFIG_VIDEO_IMX415) += imx415.o
++obj-$(CONFIG_VIDEO_IMX477) += imx477.o
+ obj-$(CONFIG_VIDEO_IR_I2C) += ir-kbd-i2c.o
+ obj-$(CONFIG_VIDEO_ISL7998X) += isl7998x.o
+ obj-$(CONFIG_VIDEO_KS0127) += ks0127.o
+diff --git a/drivers/media/i2c/imx477.c b/drivers/media/i2c/imx477.c
+--- a/drivers/media/i2c/imx477.c
++++ b/drivers/media/i2c/imx477.c
+@@ -1147,7 +1147,7 @@
+ 	/* Initialize try_fmt for the embedded metadata pad */
+ 	try_fmt_meta->width = IMX477_EMBEDDED_LINE_WIDTH;
+ 	try_fmt_meta->height = IMX477_NUM_EMBEDDED_LINES;
+-	try_fmt_meta->code = MEDIA_BUS_FMT_SENSOR_DATA;
++	try_fmt_meta->code = MEDIA_BUS_FMT_META_8;
+ 	try_fmt_meta->field = V4L2_FIELD_NONE;
+ 
+ 	/* Initialize try_crop */
+@@ -1299,7 +1299,7 @@
+ 		if (code->index > 0)
+ 			return -EINVAL;
+ 
+-		code->code = MEDIA_BUS_FMT_SENSOR_DATA;
++		code->code = MEDIA_BUS_FMT_META_8;
+ 	}
+ 
+ 	return 0;
+@@ -1331,7 +1331,7 @@
+ 		fse->min_height = supported_modes[fse->index].height;
+ 		fse->max_height = fse->min_height;
+ 	} else {
+-		if (fse->code != MEDIA_BUS_FMT_SENSOR_DATA || fse->index > 0)
++		if (fse->code != MEDIA_BUS_FMT_META_8 || fse->index > 0)
+ 			return -EINVAL;
+ 
+ 		fse->min_width = IMX477_EMBEDDED_LINE_WIDTH;
+@@ -1367,7 +1367,7 @@
+ {
+ 	fmt->format.width = IMX477_EMBEDDED_LINE_WIDTH;
+ 	fmt->format.height = IMX477_NUM_EMBEDDED_LINES;
+-	fmt->format.code = MEDIA_BUS_FMT_SENSOR_DATA;
++	fmt->format.code = MEDIA_BUS_FMT_META_8;
+ 	fmt->format.field = V4L2_FIELD_NONE;
+ }
+ 
+@@ -1389,7 +1389,7 @@
+ 		/* update the code which could change due to vflip or hflip: */
+ 		try_fmt->code = fmt->pad == IMAGE_PAD ?
+ 				imx477_get_format_code(imx477, try_fmt->code) :
+-				MEDIA_BUS_FMT_SENSOR_DATA;
++				MEDIA_BUS_FMT_META_8;
+ 		fmt->format = *try_fmt;
+ 	} else {
+ 		if (fmt->pad == IMAGE_PAD) {
+@@ -2167,6 +2167,8 @@
+ 	/* Request optional enable pin */
+ 	imx477->reset_gpio = devm_gpiod_get_optional(dev, "reset",
+ 						     GPIOD_OUT_HIGH);
++	if (IS_ERR(imx477->reset_gpio))
++		return PTR_ERR(imx477->reset_gpio);
+ 
+ 	/*
+ 	 * The sensor must be powered for imx477_identify_module()

@@ -130,6 +130,12 @@ test "$(fdtget -t s "$nano_emc_dtb" /actmon@6000c800 compatible)" = nvidia,tegra
 for rate in 204000000 1600000000; do
   test "$(fdtget -t u "$nano_emc_dtb" "/opp-table-emc/opp-$rate" opp-hz)" = "0 $rate"
 done
+nano_camera_dtb=$dest/tegra210-p3450-0000-nvgpu-emc-cam0-imx477.dtb
+dtc -@ -Wno-graph_child_address -I dts -O dtb -o /tmp/nano-cam0-imx477.dtbo \
+  /project/device-tree/nano-cam0-imx477.dtso
+fdtoverlay -i "$nano_emc_dtb" -o "$nano_camera_dtb" /tmp/nano-cam0-imx477.dtbo
+test "$(fdtget -t s "$nano_camera_dtb" /i2c-mux-camera/i2c@0/camera@1a compatible)" = sony,imx477
+test "$(fdtget -t u "$nano_camera_dtb" /host1x@50000000/vi@54080000/ports/port@0 reg)" = 0
 units="$stage/usr/lib/systemd/system"
 install -d "$stage/usr/libexec" "$units/multi-user.target.wants"
 install -m 755 /project/device-tree/boot/debian-tegra-emc-watchdog \
@@ -148,7 +154,7 @@ Section: kernel
 Priority: optional
 Description: Jetson Nano 4 GB developer kit device tree for Debian 13
  GPU-enabled P3450-0000 tree for the P3448-0000 module and P3449 carrier.
- Includes an opt-in RAM-code-0 EMC tree and watchdog-guarded ACTMON service.
+ Includes RAM-code-0 EMC trees, watchdog-guarded ACTMON, and optional IMX477 CAM0.
 EOF
 dpkg-deb --build --root-owner-group "$stage" \
   "/project/out/${name}_${NANO_DEVICE_TREE_VERSION}_arm64.deb"

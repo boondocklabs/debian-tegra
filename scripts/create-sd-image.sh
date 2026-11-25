@@ -268,7 +268,8 @@ case $target in
     device_tree_version=$NANO_DEVICE_TREE_VERSION
     boot_dtb=tegra210-p3450-0000-nvgpu.dtb
     emc_dtb=tegra210-p3450-0000-nvgpu-emc.dtb
-    dtbs=("$boot_dtb" "$emc_dtb")
+    camera_dtb=tegra210-p3450-0000-nvgpu-emc-cam0-imx477.dtb
+    dtbs=("$boot_dtb" "$emc_dtb" "$camera_dtb")
     ;;
   *) echo 'Invalid SD image target' >&2; exit 2 ;;
 esac
@@ -782,6 +783,8 @@ if [[ $target == tx1 ]]; then
 else
   write_boot_entry debian-tegra-nano-emc 'Nano EMC up to 1600 MHz' "$emc_dtb" \
     'modprobe.blacklist=nvgpu,tegra30_devfreq debian_tegra.nano_emc=1'
+  write_boot_entry debian-tegra-nano-emc-cam0-imx477 'Nano EMC + CAM0 IMX477' "$camera_dtb" \
+    'modprobe.blacklist=nvgpu,tegra30_devfreq debian_tegra.nano_emc=1 cma=192M'
 fi
 
 umount -R "$root/dev"
