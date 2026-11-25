@@ -1,0 +1,12 @@
+[Unit]
+Description=Hardware watchdog for the Nano EMC boot entry
+ConditionKernelCommandLine=debian_tegra.nano_emc=1
+ConditionPathExists=/sys/firmware/devicetree/base/actmon@6000c800/compatible
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/libexec/debian-tegra-nano-emc-watchdog
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=15s

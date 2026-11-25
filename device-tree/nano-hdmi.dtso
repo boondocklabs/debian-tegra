@@ -1,0 +1,13 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * P3448 GPIO PA6 is MOD_SLEEP#. The P3449 carrier uses it to enable
+ * VDD_3V3_HDMI, which supplies the HDMI DDC level shifter. The base tree
+ * already owns PA6 through this fixed regulator. Keep it asserted from
+ * regulator probe onward, independently of the XUSB driver's power state.
+ */
+&{/regulator-vdd-hub-3v3} {
+	regulator-boot-on;
+	regulator-always-on;
+};

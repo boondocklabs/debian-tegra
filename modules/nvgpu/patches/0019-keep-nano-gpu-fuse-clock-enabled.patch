@@ -1,0 +1,113 @@
+Subject: [PATCH] Keep the Tegra210 fuse clock enabled while the Nano GPU is powered
+
+GM20B reads fuses during startup. Keep the gate on across rail enable and
+the first chip-ID read, as in NVIDIA BSP. Linux runtime PM normally gates it.
+
+Link: https://lkml.rescloud.iu.edu/2610.2/01951.html
+
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -7,6 +7,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/of.h>
++#include <linux/of_clk.h>
+ #include <linux/clkdev.h>
+ #include <linux/of_platform.h>
+ #include <linux/debugfs.h>
+@@ -883,6 +884,7 @@
+ 	struct clk *gpu;
+ 	struct clk *ref;
+ 	struct clk *pwr;
++	struct clk *fuse;
+ 	struct mutex rate_lock;
+ 	bool powered;
+ } tx1_power;
+@@ -1007,24 +1009,31 @@
+ 	if (!platform->reset_control)
+ 		return -ENODEV;
+ 
++	/* GM20B samples fuse data while the GPU powers up. */
++	err = clk_prepare_enable(tx1_power.fuse);
++	if (err)
++		return err;
++
+ 	/* P3448's BSP programs a 1 V GPU rail before releasing reset.
+ 	 * The PWM regulator otherwise starts at the bottom of its range.
+ 	 */
+ 	if (nano) {
+ 		int voltage = regulator_get_voltage(tx1_power.vdd);
+ 
+-		if (voltage < 0)
+-			return voltage;
++		if (voltage < 0) {
++			err = voltage;
++			goto disable_fuse;
++		}
+ 		if (voltage < 1000000) {
+ 			err = regulator_set_voltage(tx1_power.vdd, 1000000, 1000000);
+ 			if (err)
+-				return err;
++				goto disable_fuse;
+ 		}
+ 	}
+ 
+ 	err = regulator_enable(tx1_power.vdd);
+ 	if (err)
+-		return err;
++		goto disable_fuse;
+ 	err = clk_prepare_enable(tx1_power.gpu);
+ 	if (err)
+ 		goto disable_vdd;
+@@ -1079,6 +1088,8 @@
+ 	clk_unprepare(tx1_power.gpu);
+ disable_vdd:
+ 	regulator_disable(tx1_power.vdd);
++disable_fuse:
++	clk_disable_unprepare(tx1_power.fuse);
+ 	return err;
+ }
+ 
+@@ -1098,11 +1109,20 @@
+ 	clk_disable_unprepare(tx1_power.ref);
+ 	clk_disable_unprepare(tx1_power.gpu);
+ 	tx1_power.powered = false;
+-	return regulator_disable(tx1_power.vdd);
++	err = regulator_disable(tx1_power.vdd);
++	clk_disable_unprepare(tx1_power.fuse);
++	return err;
++}
++
++static void nano_gpu_put_fuse_clock(void *clock)
++{
++	clk_put(clock);
+ }
+ 
+ static int tx1_gpu_get_resources(struct device *dev)
+ {
++	struct device_node *fuse;
++
+ 	mutex_init(&tx1_power.rate_lock);
+ 	tx1_power.vdd = devm_regulator_get(dev, "vdd");
+ 	if (IS_ERR(tx1_power.vdd))
+@@ -1116,7 +1136,19 @@
+ 	tx1_power.pwr = devm_clk_get(dev, "pwr");
+ 	if (IS_ERR(tx1_power.pwr))
+ 		return PTR_ERR(tx1_power.pwr);
+-	return 0;
++	tx1_power.fuse = NULL;
++	if (!of_machine_is_compatible("nvidia,p3450-0000"))
++		return 0;
++
++	/* Older Nano DTBs expose the shared gate on the SoC fuse node. */
++	fuse = of_find_compatible_node(NULL, NULL, "nvidia,tegra210-efuse");
++	if (!fuse)
++		return -ENODEV;
++	tx1_power.fuse = of_clk_get_by_name(fuse, "fuse");
++	of_node_put(fuse);
++	if (IS_ERR(tx1_power.fuse))
++		return PTR_ERR(tx1_power.fuse);
++	return devm_add_action_or_reset(dev, nano_gpu_put_fuse_clock, tx1_power.fuse);
+ }
+ #endif
+ 

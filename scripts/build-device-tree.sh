@@ -21,7 +21,8 @@ mkdir -p "$stage/DEBIAN" \
   "$stage/usr/share/doc/$name" /tmp/tx1-kernel-package
 dpkg-deb -x "/project/out/linux-image-${DEBIAN_KERNEL_ABI}_${DEBIAN_KERNEL_VERSION}_arm64.deb" \
   /tmp/tx1-kernel-package
-source_dtb=/tmp/tx1-kernel-package/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180.dtb
+kernel_dtbs=/tmp/tx1-kernel-package/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia
+source_dtb=$kernel_dtbs/tegra210-p2371-2180.dtb
 test -f "$source_dtb"
 dest=$stage/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia
 cp "$source_dtb" "$dest/tegra210-p2371-2180-nvgpu.dtb"
@@ -66,7 +67,7 @@ fi
 units="$stage/usr/lib/systemd/system"
 install -d "$stage/usr/libexec" "$units/multi-user.target.wants"
 install -m 755 /project/device-tree/boot/debian-tegra-emc-watchdog "$stage/usr/libexec/"
-install -m 644 /project/device-tree/boot/*.service "$units/"
+install -m 644 /project/device-tree/boot/debian-tegra-emc-{actmon,watchdog}.service "$units/"
 ln -s ../debian-tegra-emc-actmon.service "$units/multi-user.target.wants/debian-tegra-emc-actmon.service"
 
 install -d "$stage/usr/lib/udev/rules.d"
@@ -95,4 +96,60 @@ hardware watchdog is armed. This package does not modify the boot menu.
 EOF
 dpkg-deb --build --root-owner-group "$stage" \
   "/project/out/${name}_${DEBIAN_KERNEL_VERSION}_arm64.deb"
+tx1_stage=$stage
+name=debian-tegra-nano-device-tree
+stage=/project/out/$name-stage
+dest=$stage/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia
+rm -rf "$stage"
+install -d "$stage/DEBIAN" "$dest" "$stage/usr/lib/udev/rules.d"
+source_dtb=$kernel_dtbs/tegra210-p3450-0000.dtb
+nano_dtb=$dest/tegra210-p3450-0000-nvgpu.dtb
+test "$(fdtget -t s "$source_dtb" / compatible)" = 'nvidia,p3450-0000 nvidia,tegra210'
+dtc -@ -I dts -O dtb -o /tmp/nano-hdmi.dtbo /project/device-tree/nano-hdmi.dtso
+dtc -@ -I dts -O dtb -o /tmp/nano-power-monitor.dtbo /project/device-tree/nano-power-monitor.dtso
+fdtoverlay -i "$source_dtb" -o "$nano_dtb" /tmp/nano-hdmi.dtbo /tmp/nano-power-monitor.dtbo
+nano_sensor=/host1x@50000000/i2c@546c0000/power-sensor@40
+test "$(fdtget -t s "$nano_dtb" "$nano_sensor" compatible)" = ti,ina3221
+test "$(fdtget -t s "$nano_dtb" "$nano_sensor/input@0" label)" = POM_5V_IN
+test "$(fdtget -t s "$nano_dtb" "$nano_sensor/input@1" label)" = POM_5V_GPU
+test "$(fdtget -t s "$nano_dtb" "$nano_sensor/input@2" label)" = POM_5V_CPU
+for channel in 0 1 2; do
+  test "$(fdtget -t u "$nano_dtb" "$nano_sensor/input@$channel" shunt-resistor-micro-ohms)" = 5000
+done
+for property in regulator-boot-on regulator-always-on; do
+  fdtget "$nano_dtb" /regulator-vdd-hub-3v3 "$property" >/dev/null
+done
+fdtput -t s "$nano_dtb" /gpu@57000000 status okay
+test "$(fdtget -t s "$nano_dtb" /gpu@57000000 compatible)" = nvidia,gm20b
+fdtget -t x "$nano_dtb" /gpu@57000000 vdd-supply >/dev/null
+nano_emc_dtb=$dest/tegra210-p3450-0000-nvgpu-emc.dtb
+dtc -@ -I dts -O dtb -o /tmp/nano-emc.dtbo /project/device-tree/nano-emc.dtso
+fdtoverlay -i "$nano_dtb" -o "$nano_emc_dtb" /tmp/nano-emc.dtbo
+test "$(fdtget -t x "$nano_emc_dtb" /reserved-memory/cboot-fdt@83100000 reg)" = '0 83100000 0 100000'
+test "$(fdtget -t s "$nano_emc_dtb" /actmon@6000c800 compatible)" = nvidia,tegra210-nano-actmon
+for rate in 204000000 1600000000; do
+  test "$(fdtget -t u "$nano_emc_dtb" "/opp-table-emc/opp-$rate" opp-hz)" = "0 $rate"
+done
+units="$stage/usr/lib/systemd/system"
+install -d "$stage/usr/libexec" "$units/multi-user.target.wants"
+install -m 755 /project/device-tree/boot/debian-tegra-emc-watchdog \
+  "$stage/usr/libexec/debian-tegra-nano-emc-watchdog"
+install -m 644 /project/device-tree/boot/debian-tegra-nano-emc-{actmon,watchdog}.service "$units/"
+ln -s ../debian-tegra-nano-emc-actmon.service "$units/multi-user.target.wants/debian-tegra-nano-emc-actmon.service"
+install -m 644 "$tx1_stage/usr/lib/udev/rules.d/70-debian-tegra-host1x-fence.rules" \
+  "$stage/usr/lib/udev/rules.d/70-debian-tegra-nano-host1x-fence.rules"
+cat > "$stage/DEBIAN/control" <<EOF
+Package: $name
+Version: $NANO_DEVICE_TREE_VERSION
+Architecture: arm64
+Maintainer: debian-tegra <maintainers@example.invalid>
+Depends: linux-image-$DEBIAN_KERNEL_ABI (= $DEBIAN_KERNEL_VERSION), $NVGPU_PACKAGE_NAME (>= $NVGPU_PACKAGE_VERSION), python3, kmod, systemd, procps
+Section: kernel
+Priority: optional
+Description: Jetson Nano 4 GB developer kit device tree for Debian 13
+ GPU-enabled P3450-0000 tree for the P3448-0000 module and P3449 carrier.
+ Includes an opt-in RAM-code-0 EMC tree and watchdog-guarded ACTMON service.
+EOF
+dpkg-deb --build --root-owner-group "$stage" \
+  "/project/out/${name}_${NANO_DEVICE_TREE_VERSION}_arm64.deb"
 (cd /project/out && sha256sum *.deb > SHA256SUMS)

@@ -1,4 +1,4 @@
-name: Build TX1 Debian packages
+name: Build Tegra210 Debian packages
 
 on:
   push:
@@ -80,12 +80,12 @@ jobs:
         with:
           name: tx1-kernel
           path: out
-      - name: Build GPU and fan device trees
+      - name: Build TX1 and Nano device trees
         run: bash scripts/build-device-tree.sh
       - name: Stage device tree package
         run: |
           mkdir artifact
-          cp out/debian-tegra-tx1-device-tree_*.deb artifact/
+          cp out/debian-tegra-{tx1,nano}-device-tree_*.deb artifact/
       - uses: actions/upload-artifact@v4
         with:
           name: tx1-device-tree
@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           cd packages
-          test "$(find . -maxdepth 1 -name '*.deb' | wc -l)" -eq 5
+          test "$(find . -maxdepth 1 -name '*.deb' | wc -l)" -eq 6
           for deb in *.deb; do
             test "$(dpkg-deb --field "$deb" Architecture)" = arm64
             dpkg-deb --field "$deb" Package Version Architecture

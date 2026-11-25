@@ -1,0 +1,138 @@
+Subject: [PATCH] thermal: tegra: expose Tegra210 overcurrent counters via hwmon
+
+Enable the per-alarm statistics on Tegra210 and publish read-only
+OC1 through OC4 event counts under soctherm_oc for jtop. OC5 is
+reserved. Read the hardware statistics registers independently of
+the aggregate interrupt and preserve counts across suspend resets.
+
+diff --git a/drivers/thermal/tegra/soctherm.c b/drivers/thermal/tegra/soctherm.c
+--- a/drivers/thermal/tegra/soctherm.c
++++ b/drivers/thermal/tegra/soctherm.c
+@@ -21,6 +21,8 @@
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/err.h>
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/irq.h>
+@@ -345,6 +347,8 @@
+ 
+ 	struct dentry *debugfs_dir;
+ 
++	u64 oc_saved[THROTTLE_OC5 - THROTTLE_OC1];
++	bool oc_stats_running;
+ 	struct mutex thermctl_lock;
+ };
+ 
+@@ -2017,6 +2021,57 @@
+ 	return 0;
+ }
+ 
++static bool soctherm_has_oc_hwmon(struct device *dev)
++{
++	return IS_REACHABLE(CONFIG_HWMON) &&
++	       of_device_is_compatible(dev->of_node, "nvidia,tegra210-soctherm");
++}
++
++static ssize_t oc_event_cnt_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct tegra_soctherm *tegra = dev_get_drvdata(dev);
++	int alarm = to_sensor_dev_attr(attr)->index;
++	u64 count;
++
++	mutex_lock(&tegra->thermctl_lock);
++	count = tegra->oc_saved[alarm - THROTTLE_OC1];
++	if (tegra->oc_stats_running)
++		count += readl(tegra->regs + ALARM_STATS(alarm));
++	mutex_unlock(&tegra->thermctl_lock);
++
++	return sysfs_emit(buf, "%llu\n", count);
++}
++
++static SENSOR_DEVICE_ATTR_RO(oc1_event_cnt, oc_event_cnt, THROTTLE_OC1);
++static SENSOR_DEVICE_ATTR_RO(oc2_event_cnt, oc_event_cnt, THROTTLE_OC2);
++static SENSOR_DEVICE_ATTR_RO(oc3_event_cnt, oc_event_cnt, THROTTLE_OC3);
++static SENSOR_DEVICE_ATTR_RO(oc4_event_cnt, oc_event_cnt, THROTTLE_OC4);
++
++static struct attribute *soctherm_oc_attrs[] = {
++	&sensor_dev_attr_oc1_event_cnt.dev_attr.attr,
++	&sensor_dev_attr_oc2_event_cnt.dev_attr.attr,
++	&sensor_dev_attr_oc3_event_cnt.dev_attr.attr,
++	&sensor_dev_attr_oc4_event_cnt.dev_attr.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(soctherm_oc);
++
++static void soctherm_oc_stats_save(struct tegra_soctherm *tegra)
++{
++	int alarm;
++
++	mutex_lock(&tegra->thermctl_lock);
++	if (tegra->oc_stats_running) {
++		/* Clock teardown resets SOCTHERM and its counters. */
++		for (alarm = THROTTLE_OC1; alarm < THROTTLE_OC5; alarm++)
++			tegra->oc_saved[alarm - THROTTLE_OC1] +=
++				readl(tegra->regs + ALARM_STATS(alarm));
++		tegra->oc_stats_running = false;
++	}
++	mutex_unlock(&tegra->thermctl_lock);
++}
++
+ static void soctherm_init(struct platform_device *pdev)
+ {
+ 	struct tegra_soctherm *tegra = platform_get_drvdata(pdev);
+@@ -2046,6 +2101,13 @@
+ 
+ 	/* Configure hw throttle */
+ 	tegra_soctherm_throttle(&pdev->dev);
++
++	if (soctherm_has_oc_hwmon(&pdev->dev)) {
++		mutex_lock(&tegra->thermctl_lock);
++		writel(OC_STATS_CTL_EN_ALL, tegra->regs + OC_STATS_CTL);
++		tegra->oc_stats_running = true;
++		mutex_unlock(&tegra->thermctl_lock);
++	}
+ }
+ 
+ static const struct of_device_id tegra_soctherm_of_match[] = {
+@@ -2074,6 +2136,7 @@
+ static int tegra_soctherm_probe(struct platform_device *pdev)
+ {
+ 	const struct of_device_id *match;
++	struct device *hwmon;
+ 	struct tegra_soctherm *tegra;
+ 	struct thermal_zone_device *z;
+ 	struct tsensor_shared_calib shared_calib;
+@@ -2208,6 +2271,13 @@
+ 
+ 	soctherm_debug_init(pdev);
+ 
++	if (soctherm_has_oc_hwmon(&pdev->dev)) {
++		hwmon = devm_hwmon_device_register_with_groups(&pdev->dev,
++						      "soctherm_oc", tegra, soctherm_oc_groups);
++		if (IS_ERR(hwmon))
++			dev_warn(&pdev->dev, "failed to register OC counters: %pe\n", hwmon);
++	}
++
+ 	return 0;
+ 
+ disable_clocks:
+@@ -2222,6 +2292,7 @@
+ 
+ 	debugfs_remove_recursive(tegra->debugfs_dir);
+ 
++	soctherm_oc_stats_save(tegra);
+ 	soctherm_clk_enable(pdev, false);
+ }
+ 
+@@ -2229,6 +2300,7 @@
+ {
+ 	struct platform_device *pdev = to_platform_device(dev);
+ 
++	soctherm_oc_stats_save(dev_get_drvdata(dev));
+ 	soctherm_clk_enable(pdev, false);
+ 
+ 	return 0;

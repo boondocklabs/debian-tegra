@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		nano_cboot_fdt: cboot-fdt@83100000 {
+			reg = <0 0x83100000 0 0x100000>;
+			no-map;
+		};
+	};
+
+	actmon@6000c800 {
+		compatible = "nvidia,tegra210-nano-actmon";
+		reg = <0 0x6000c800 0 0x400>;
+		interrupt-parent = <&gic>;
+		interrupts = <0 45 4>;
+		clocks = <&tegra_car 119>, <&tegra_car 57>;
+		clock-names = "actmon", "emc";
+		resets = <&tegra_car 119>;
+		reset-names = "actmon";
+		operating-points-v2 = <&nano_emc_opps>;
+	};
+
+	nano_emc_opps: opp-table-emc {
+		compatible = "operating-points-v2";
+
+		opp-204000000 {
+			opp-hz = /bits/ 64 <204000000>;
+		};
+
+		opp-1600000000 {
+			opp-hz = /bits/ 64 <1600000000>;
+		};
+	};
+};
+
+&emc {
+	nvidia,cboot-timing-region = <&nano_cboot_fdt>;
+	vdd-soc-supply = <&vdd_soc>;
+};

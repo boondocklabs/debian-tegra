@@ -1,0 +1,29 @@
+Subject: [PATCH] Restore the Jetson Nano BSP GPU startup voltage
+
+Set the P3448 GPU regulator to at least 1 V before enabling it and
+deasserting reset, as in the NVIDIA R32.7.6 Nano board tree.
+
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -1005,6 +1005,21 @@
+ 	if (!platform->reset_control)
+ 		return -ENODEV;
+ 
++	/* P3448's BSP programs a 1 V GPU rail before releasing reset.
++	 * The PWM regulator otherwise starts at the bottom of its range.
++	 */
++	if (of_machine_is_compatible("nvidia,p3450-0000")) {
++		int voltage = regulator_get_voltage(tx1_power.vdd);
++
++		if (voltage < 0)
++			return voltage;
++		if (voltage < 1000000) {
++			err = regulator_set_voltage(tx1_power.vdd, 1000000, 1000000);
++			if (err)
++				return err;
++		}
++	}
++
+ 	err = regulator_enable(tx1_power.vdd);
+ 	if (err)
+ 		return err;

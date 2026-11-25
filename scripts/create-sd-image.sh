@@ -6,28 +6,30 @@ usage() {
   cat <<'EOF'
 Usage: scripts/create-sd-image.sh --authorized-keys FILE [options]
 
-Build a Debian 13 Jetson TX1 SD image from the signed debian-tegra APT repo.
+Build a Debian 13 Jetson SD image from the signed debian-tegra APT repo.
 
 Options:
+  --target BOARD          Target: tx1 (default) or nano (4 GB developer kit)
   --authorized-keys FILE  Public SSH key(s) for the debian user (required)
   --wifi-ssid SSID         Wi-Fi network name; prompts for WPA/WPA2 password
   --wifi-password-file FILE  Read password from a file instead of prompting
   --wifi-hidden            Connect to an SSID that does not broadcast
   --root-password          Prompt for a local root password
-  --firmware-dir DIR      Use a local TX1 firmware tree instead of downloading
-  --local-packages DIR    Install the five locally built TX1 .deb files
-  --no-firmware           Skip firmware and default to the safe boot entry
-  --no-cuda               Skip R36.5.1 CUDA driver and CUDA 12.6 toolkit
-  --output NAME           Image filename under out/ (default: debian-tegra-tx1-sd.img)
-  --size-mib N            Image size in MiB (default: 8192; 2048 with --no-cuda)
-  --hostname NAME         Device hostname (default: jetson-tx1)
+  --firmware-dir DIR      Use a local Tegra210 BSP firmware tree instead of downloading
+  --local-packages DIR    Install locally built kernel, modules, and board device tree .debs
+  --no-firmware           Skip firmware and automatic GPU loading
+  --no-cuda               Skip R36.5.1 CUDA driver, CUDA 12.6 toolkit, and cuDNN
+  --output NAME           Image filename under out/ (default: debian-tegra-BOARD-sd.img)
+  --size-mib N            Image size in MiB (default: 10240; minimum 9216)
+                         With --no-cuda, default: 8192; minimum: 2048
+  --hostname NAME         Device hostname (default: jetson-BOARD)
   --force                 Replace an existing output image
 EOF
 }
 
 if [[ ${1:-} != --container ]]; then
   authorized_keys= firmware_dir= local_packages= wifi_ssid= wifi_password_file=
-  output=debian-tegra-tx1-sd.img size_mib=8192 hostname=jetson-tx1
+  target=tx1 output= size_mib= hostname=
   force=0 no_firmware=0 no_cuda=0 wifi_hidden=0 root_password_enabled=0
   wifi_temp_file= root_temp_file=
   cleanup_secret_files() {
@@ -61,6 +63,7 @@ if [[ ${1:-} != --container ]]; then
   }
   while (($#)); do
     case $1 in
+      --target) target=${2:?missing target}; shift 2 ;;
       --authorized-keys) authorized_keys=${2:?missing key file}; shift 2 ;;
       --wifi-ssid) wifi_ssid=${2:?missing Wi-Fi SSID}; shift 2 ;;
       --wifi-password-file) wifi_password_file=${2:?missing Wi-Fi password file}; shift 2 ;;
@@ -78,12 +81,23 @@ if [[ ${1:-} != --container ]]; then
       *) usage >&2; exit 2 ;;
     esac
   done
+  case $target in
+    tx1|nano) ;;
+    *) echo 'Unknown target. Use tx1 or nano (Jetson Nano 4 GB developer kit).' >&2; exit 2 ;;
+  esac
+  output=${output:-debian-tegra-$target-sd.img}
+  hostname=${hostname:-jetson-$target}
   [[ -s $authorized_keys ]] || { echo 'A nonempty --authorized-keys file is required' >&2; exit 2; }
   [[ $output =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.img$ ]] || {
     echo '--output must be a simple .img filename' >&2; exit 2;
   }
   min_size_mib=2048
-  [[ $no_cuda == 0 ]] && min_size_mib=8192
+  default_size_mib=8192
+  if [[ $no_cuda == 0 ]]; then
+    min_size_mib=9216
+    default_size_mib=10240
+  fi
+  size_mib=${size_mib:-$default_size_mib}
   [[ $size_mib =~ ^[0-9]+$ ]] && ((size_mib >= min_size_mib)) || {
     echo "--size-mib must be at least $min_size_mib" >&2; exit 2;
   }
@@ -171,18 +185,20 @@ if [[ ${1:-} != --container ]]; then
       echo "NVIDIA BSP SHA-256 mismatch: $bsp" >&2; exit 1
     }
     mounts+=(--mount "type=bind,source=$(pwd)/$bsp,target=/input/bsp.tbz2,readonly")
-    brcm_package=cache/firmware-brcm80211_20250410-2_all.deb
-    brcm_url=https://deb.debian.org/debian/pool/non-free-firmware/f/firmware-nonfree/firmware-brcm80211_20250410-2_all.deb
-    brcm_sha256=266cc703e2299f5253fd1ff9a1fd625d85a2c8e5a88b1a65fcc190ac384ce3d7
-    if [[ ! -s $brcm_package ]]; then
-      curl --fail --location --retry 3 --output "$brcm_package.partial" "$brcm_url"
-      mv -f "$brcm_package.partial" "$brcm_package"
+    if [[ $target == tx1 ]]; then
+      brcm_package=cache/firmware-brcm80211_20250410-2_all.deb
+      brcm_url=https://deb.debian.org/debian/pool/non-free-firmware/f/firmware-nonfree/firmware-brcm80211_20250410-2_all.deb
+      brcm_sha256=266cc703e2299f5253fd1ff9a1fd625d85a2c8e5a88b1a65fcc190ac384ce3d7
+      if [[ ! -s $brcm_package ]]; then
+        curl --fail --location --retry 3 --output "$brcm_package.partial" "$brcm_url"
+        mv -f "$brcm_package.partial" "$brcm_package"
+      fi
+      actual_sha256=$(openssl dgst -sha256 "$brcm_package" | awk '{print $NF}')
+      [[ $actual_sha256 == "$brcm_sha256" ]] || {
+        echo "Debian BCM4354 firmware SHA-256 mismatch: $brcm_package" >&2; exit 1
+      }
+      mounts+=(--mount "type=bind,source=$(pwd)/$brcm_package,target=/input/brcm-firmware.deb,readonly")
     fi
-    actual_sha256=$(openssl dgst -sha256 "$brcm_package" | awk '{print $NF}')
-    [[ $actual_sha256 == "$brcm_sha256" ]] || {
-      echo "Debian BCM4354 firmware SHA-256 mismatch: $brcm_package" >&2; exit 1
-    }
-    mounts+=(--mount "type=bind,source=$(pwd)/$brcm_package,target=/input/brcm-firmware.deb,readonly")
   fi
   if [[ $no_cuda == 0 ]]; then
     mkdir -p cache
@@ -222,7 +238,7 @@ if [[ ${1:-} != --container ]]; then
   fi
   docker build --platform linux/arm64 -f Containerfile.sd -t debian-tegra-sd-builder .
   docker run --rm --privileged --platform linux/arm64 \
-    -e IMAGE_NAME="$output" -e IMAGE_SIZE_MIB="$size_mib" \
+    -e IMAGE_TARGET="$target" -e IMAGE_NAME="$output" -e IMAGE_SIZE_MIB="$size_mib" \
     -e IMAGE_HOSTNAME="$hostname" -e IMAGE_FORCE="$force" \
     -e IMAGE_WIFI_SSID="$wifi_ssid" -e IMAGE_WIFI_HIDDEN="$wifi_hidden" \
     "${mounts[@]}" debian-tegra-sd-builder \
@@ -234,6 +250,29 @@ fi
   echo '--container requires the ARM64 Docker builder' >&2; exit 2;
 }
 source modules/sources.env
+
+target=${IMAGE_TARGET:-tx1}
+case $target in
+  tx1)
+    board_title='Jetson TX1'
+    fs_label=TEGRA-TX1-SD
+    device_tree_version=$DEBIAN_KERNEL_VERSION
+    boot_dtb=tegra210-p2371-2180-nvgpu-fan.dtb
+    camera_dtb=tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
+    emc_dtb=tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb
+    dtbs=("$boot_dtb" "$camera_dtb" "$emc_dtb")
+    ;;
+  nano)
+    board_title='Jetson Nano 4 GB'
+    fs_label=TEGRA-NANO-SD
+    device_tree_version=$NANO_DEVICE_TREE_VERSION
+    boot_dtb=tegra210-p3450-0000-nvgpu.dtb
+    emc_dtb=tegra210-p3450-0000-nvgpu-emc.dtb
+    dtbs=("$boot_dtb" "$emc_dtb")
+    ;;
+  *) echo 'Invalid SD image target' >&2; exit 2 ;;
+esac
+device_tree_package=debian-tegra-$target-device-tree
 repo_url=https://boondocklabs.github.io/debian-tegra
 key_fingerprint=0F248B4E00261A42AC3ECC19C0787BB2FD9D04B6
 root=/build/root
@@ -261,6 +300,12 @@ actual_fingerprint=$(gpg --batch --show-keys --with-colons \
 cat > "$root/etc/apt/sources.list.d/debian-tegra.list" <<EOF
 deb [arch=arm64 signed-by=/usr/share/keyrings/debian-tegra-archive-keyring.gpg] $repo_url/ trixie main
 EOF
+if [[ $target == nano && ( -f /input/bsp.tbz2 || -d /input/firmware ) ]]; then
+  # The Nano developer kit uses a Realtek PCIe Ethernet controller.
+  cat > "$root/etc/apt/sources.list.d/debian-tegra-firmware.list" <<'EOF'
+deb https://deb.debian.org/debian trixie non-free-firmware
+EOF
+fi
 cat > "$root/etc/initramfs-tools/conf.d/tegra-tx1" <<'EOF'
 MODULES=list
 COMPRESS=zstd
@@ -293,18 +338,22 @@ cleanup_mounts() {
 trap cleanup_mounts EXIT
 
 chroot "$root" apt-get update -o APT::Update::Error-Mode=any
+if [[ -f $root/etc/apt/sources.list.d/debian-tegra-firmware.list ]]; then
+  chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends firmware-realtek firmware-iwlwifi wireless-regdb
+fi
 if [[ -d /input/packages ]]; then
   package_names=(
     "linux-image-$DEBIAN_KERNEL_ABI"
     "linux-headers-$DEBIAN_KERNEL_ABI"
     "$NVMAP_PACKAGE_NAME"
     "$NVGPU_PACKAGE_NAME"
-    debian-tegra-tx1-device-tree
+    "$device_tree_package"
   )
   package_versions=(
     "$DEBIAN_KERNEL_VERSION" "$DEBIAN_KERNEL_VERSION"
     "$NVMAP_PACKAGE_VERSION" "$NVGPU_PACKAGE_VERSION"
-    "$DEBIAN_KERNEL_VERSION"
+    "$device_tree_version"
   )
   install -d "$root/tmp/kernel-packages"
   package_paths=()
@@ -326,7 +375,7 @@ else
     "linux-headers-$DEBIAN_KERNEL_ABI=$DEBIAN_KERNEL_VERSION" \
     "$NVMAP_PACKAGE_NAME=$NVMAP_PACKAGE_VERSION" \
     "$NVGPU_PACKAGE_NAME=$NVGPU_PACKAGE_VERSION" \
-    "debian-tegra-tx1-device-tree=$DEBIAN_KERNEL_VERSION"
+    "$device_tree_package=$device_tree_version"
 fi
 
 if [[ -f /input/cuda-driver.deb && -f /input/cuda-core.deb &&
@@ -353,7 +402,7 @@ EOF
   chroot "$root" apt-get update -o APT::Key::GPGVCommand=/usr/bin/gpgv \
     -o APT::Update::Error-Mode=any
   chroot "$root" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    --no-install-recommends cuda-toolkit-12-6=12.6.3-1
+    --no-install-recommends cuda-toolkit-12-6=12.6.3-1 libcudnn9-cuda-12=9.3.0.75-1
   mkdir -p "$cuda_compat_dir"
   dpkg-deb -x /input/cuda-cublas-compat.deb "$cuda_compat_dir"
   test -s "$cuda_compat_dir/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcublas.so.12"
@@ -395,6 +444,7 @@ EOF
 /usr/local/cuda-12.6/targets/aarch64-linux/lib
 EOF
   chroot "$root" ldconfig
+  chroot "$root" ldconfig -p | grep -E '^[[:space:]]*libcudnn\.so\.9[[:space:]]'
   rm -f "$root/etc/apt/sources.list.d/debian-tegra-cuda-build.list" \
     "$root/usr/share/keyrings/debian-tegra-cuda-build-keyring.gpg"
   rm -f "$root"/var/lib/apt/lists/*developer.download.nvidia.com*
@@ -403,26 +453,26 @@ fi
 gpu_default=debian-tegra-safe
 firmware_source=
 if [[ -f /input/bsp.tbz2 ]]; then
-  # The downloaded BSP is local build input. Extract only the TX1 firmware,
-  # not NVIDIA's kernel, userspace libraries, or flashing tools.
+  # Extract the shared GM20B and Tegra210 firmware from the local BSP.
   tar -xOf /input/bsp.tbz2 \
     Linux_for_Tegra/nv_tegra/nvidia_drivers.tbz2 \
     > /build/nvidia_drivers.tbz2
   mkdir -p /build/nvidia-firmware
-  tar -xjf /build/nvidia_drivers.tbz2 -C /build/nvidia-firmware \
-    lib/firmware/tegra21x lib/firmware/brcm \
-    lib/firmware/tegra21x_xusb_firmware \
-    lib/firmware/bcm4354.hcd
+  firmware_paths=(lib/firmware/tegra21x lib/firmware/tegra21x_xusb_firmware)
+  if [[ $target == tx1 ]]; then
+    firmware_paths+=(lib/firmware/brcm lib/firmware/bcm4354.hcd)
+  fi
+  tar -xjf /build/nvidia_drivers.tbz2 -C /build/nvidia-firmware "${firmware_paths[@]}"
   firmware_source=/build/nvidia-firmware/lib/firmware
-  install -d "$root/usr/share/doc/debian-tegra-tx1-firmware"
+  install -d "$root/usr/share/doc/debian-tegra-$target-firmware"
   tar -xOf /input/bsp.tbz2 Linux_for_Tegra/nv_tegra/LICENSE \
-    > "$root/usr/share/doc/debian-tegra-tx1-firmware/LICENSE"
+    > "$root/usr/share/doc/debian-tegra-$target-firmware/LICENSE"
 elif [[ -d /input/firmware ]]; then
   firmware_source=/input/firmware
 fi
 if [[ -n $firmware_source ]]; then
   [[ -s $firmware_source/tegra21x/pmu_sig.bin ]] || {
-    echo 'NVIDIA BSP is missing TX1 GPU firmware' >&2; exit 1
+    echo 'NVIDIA BSP is missing GM20B GPU firmware' >&2; exit 1
   }
   install -d "$root/usr/lib/firmware/tegra21x" \
     "$root/usr/lib/firmware/nvidia/gm20b"
@@ -433,7 +483,7 @@ if [[ -n $firmware_source ]]; then
   install -d "$root/usr/lib/firmware/nvidia/tegra210"
   while read -r bsp_name mainline_name; do
     [[ -s $firmware_source/tegra21x/$bsp_name ]] || {
-      echo "NVIDIA BSP is missing TX1 $mainline_name firmware" >&2; exit 1
+      echo "NVIDIA BSP is missing Tegra210 $mainline_name firmware" >&2; exit 1
     }
     install -m 644 "$firmware_source/tegra21x/$bsp_name" \
       "$root/usr/lib/firmware/nvidia/tegra210/$mainline_name"
@@ -443,14 +493,6 @@ nvhost_nvdec020_ns.fw nvdec.bin
 nvhost_nvenc050.fw nvenc.bin
 nvhost_nvjpg010.fw nvjpg.bin
 TEGRA210_MULTIMEDIA_FIRMWARE
-  [[ -s $firmware_source/bcm4354.hcd ]] || {
-    echo 'NVIDIA BSP is missing TX1 Bluetooth firmware' >&2; exit 1
-  }
-  install -d "$root/usr/lib/firmware/brcm"
-  install -m 644 "$firmware_source/bcm4354.hcd" \
-    "$root/usr/lib/firmware/brcm/BCM4354.hcd"
-  ln -sfn BCM4354.hcd \
-    "$root/usr/lib/firmware/brcm/BCM4354.nvidia,p2371-2180.hcd"
   if [[ -s $firmware_source/tegra21x_xusb_firmware ]]; then
     install -m 644 "$firmware_source/tegra21x_xusb_firmware" \
       "$root/usr/lib/firmware/tegra21x_xusb_firmware"
@@ -466,20 +508,30 @@ copy_file firmware /lib/firmware/nvidia/tegra210/xusb.bin
 EOF
     chmod 755 "$root/etc/initramfs-tools/hooks/tegra-xusb"
   fi
-  if [[ -s $firmware_source/brcm/fw_bcmdhd.bin && -s $firmware_source/brcm/nvram.txt ]]; then
+  if [[ $target == tx1 ]]; then
+    [[ -s $firmware_source/bcm4354.hcd ]] || {
+      echo 'NVIDIA BSP is missing TX1 Bluetooth firmware' >&2; exit 1
+    }
     install -d "$root/usr/lib/firmware/brcm"
-    install -m 644 "$firmware_source/brcm/fw_bcmdhd.bin" \
-      "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.bin"
-    install -m 644 "$firmware_source/brcm/nvram.txt" \
-      "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.txt"
-    cp "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.txt" \
-      "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.nvidia,p2371-2180.txt"
+    install -m 644 "$firmware_source/bcm4354.hcd" \
+      "$root/usr/lib/firmware/brcm/BCM4354.hcd"
+    ln -sfn BCM4354.hcd \
+      "$root/usr/lib/firmware/brcm/BCM4354.nvidia,p2371-2180.hcd"
+    if [[ -s $firmware_source/brcm/fw_bcmdhd.bin && -s $firmware_source/brcm/nvram.txt ]]; then
+      install -d "$root/usr/lib/firmware/brcm"
+      install -m 644 "$firmware_source/brcm/fw_bcmdhd.bin" \
+        "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.bin"
+      install -m 644 "$firmware_source/brcm/nvram.txt" \
+        "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.txt"
+      cp "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.txt" \
+        "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.nvidia,p2371-2180.txt"
+    fi
+    if [[ -s $firmware_source/brcm/brcmfmac4354-sdio.clm_blob ]]; then
+      install -m 644 "$firmware_source/brcm/brcmfmac4354-sdio.clm_blob" \
+        "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.clm_blob"
+    fi
+    gpu_default=debian-tegra-gpu
   fi
-  if [[ -s $firmware_source/brcm/brcmfmac4354-sdio.clm_blob ]]; then
-    install -m 644 "$firmware_source/brcm/brcmfmac4354-sdio.clm_blob" \
-      "$root/usr/lib/firmware/brcm/brcmfmac4354-sdio.clm_blob"
-  fi
-  gpu_default=debian-tegra-gpu
 fi
 if [[ -f /input/brcm-firmware.deb ]]; then
   dpkg-deb -x /input/brcm-firmware.deb /build/debian-brcm-firmware
@@ -494,23 +546,16 @@ fi
 chroot "$root" update-initramfs -u -k "$DEBIAN_KERNEL_ABI"
 initrd=$root/boot/initrd.img-$DEBIAN_KERNEL_ABI
 [[ -s $initrd ]] && (( $(stat -c %s "$initrd") < 14000000 )) || {
-  echo 'TX1 initramfs exceeds the verified U-Boot size limit' >&2; exit 1;
+  echo 'Initramfs is missing or exceeds the U-Boot size limit' >&2; exit 1;
 }
 gzip -dc "$root/boot/vmlinuz-$DEBIAN_KERNEL_ABI" \
   > "$root/boot/Image-$DEBIAN_KERNEL_ABI"
 [[ $(od -An -tx4 -j 56 -N 4 "$root/boot/Image-$DEBIAN_KERNEL_ABI" | tr -d ' ') == 644d5241 ]] || {
   echo 'Decompressed kernel lacks the ARM64 Image magic' >&2; exit 1;
 }
-install -m 644 \
-  "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan.dtb" \
-  "$root/boot/tegra210-p2371-2180-nvgpu-fan.dtb"
-install -m 644 \
-  "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
-  "$root/boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb"
-
-install -m 644 \
-  "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb" \
-  "$root/boot/tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb"
+for dtb in "${dtbs[@]}"; do
+  install -m 644 "$root/usr/lib/linux-image-$DEBIAN_KERNEL_ABI/nvidia/$dtb" "$root/boot/$dtb"
+done
 
 # Keep U-Boot's boot files synchronized when APT upgrades packages within
 # this ABI. A new ABI still needs a new extlinux entry.
@@ -526,18 +571,12 @@ test "\$(od -An -tx4 -j 56 -N 4 "\$tmp" | tr -d ' ')" = 644d5241
 chmod 644 "\$tmp"
 mv -f "\$tmp" "/boot/Image-\$abi"
 trap - EXIT
-dtb="/usr/lib/linux-image-\$abi/nvidia/tegra210-p2371-2180-nvgpu-fan.dtb"
-test -f "\$dtb" || exit 0
-cp -f "\$dtb" /boot/tegra210-p2371-2180-nvgpu-fan.dtb
-camera_dtb="/usr/lib/linux-image-\$abi/nvidia/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb"
-if test -f "\$camera_dtb"; then
-  cp -f "\$camera_dtb" /boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
-fi
-emc_name=tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb
-emc_dtb="/usr/lib/linux-image-\$abi/nvidia/\$emc_name"
-if test -f "\$emc_dtb"; then
-  cp -f "\$emc_dtb" "/boot/\$emc_name"
-fi
+for name in ${dtbs[*]}; do
+  dtb="/usr/lib/linux-image-\$abi/nvidia/\$name"
+  if test -f "\$dtb"; then
+    cp -f "\$dtb" "/boot/\$name"
+  fi
+done
 EOF
 chmod 755 "$root/usr/local/sbin/debian-tegra-refresh-sd-boot"
 cat > "$root/etc/apt/apt.conf.d/99debian-tegra-sd-boot" <<'EOF'
@@ -630,11 +669,11 @@ if [[ -n ${IMAGE_WIFI_SSID:-} ]]; then
   wifi_password_escaped=${wifi_password//\\/\\\\}
   wifi_hidden_value=false
   [[ $IMAGE_WIFI_HIDDEN == 1 ]] && wifi_hidden_value=true
-  wifi_profile=$root/etc/NetworkManager/system-connections/tx1-wifi.nmconnection
+  wifi_profile=$root/etc/NetworkManager/system-connections/$target-wifi.nmconnection
   install -m 600 /dev/null "$wifi_profile"
   cat > "$wifi_profile" <<EOF
 [connection]
-id=TX1 Wi-Fi
+id=$board_title Wi-Fi
 type=wifi
 interface-name=wlan0
 autoconnect=true
@@ -671,7 +710,7 @@ install -m 755 /project/scripts/grow-sd-root.sh \
   "$root/usr/local/sbin/debian-tegra-grow-root"
 cat > "$root/etc/systemd/system/debian-tegra-grow-root.service" <<'EOF'
 [Unit]
-Description=Expand the TX1 SD root filesystem to card capacity
+Description=Expand the SD root filesystem to card capacity
 After=local-fs.target
 ConditionPathExists=!/var/lib/debian-tegra/root-expanded
 [Service]
@@ -705,43 +744,45 @@ rm -f "$root/var/lib/systemd/random-seed"
 chroot "$root" apt-get clean
 
 mkdir -p "$root/boot/extlinux"
-emc_blacklist=tegra30_devfreq
-if [[ $gpu_default == debian-tegra-safe ]]; then
-  emc_blacklist=nvgpu,$emc_blacklist
+if [[ $target == nano ]]; then
+  gpu_default=debian-tegra-nano-emc
 fi
-cat > "$root/boot/extlinux/extlinux.conf" <<EOF
+extlinux_conf=$root/boot/extlinux/extlinux.conf
+cat > "$extlinux_conf" <<EOF
 TIMEOUT 30
 DEFAULT $gpu_default
-MENU TITLE Debian 13 - Jetson TX1 SD
-
-LABEL debian-tegra-gpu
-    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (GPU enabled)
-    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
-    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
-    FDT /boot/tegra210-p2371-2180-nvgpu-fan.dtb
-    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 oops=panic panic=10 console=tty0 console=ttyS0,115200n8
-
-LABEL debian-tegra-ov5693
-    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (GPU + OV5693 camera)
-    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
-    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
-    FDT /boot/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
-    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 oops=panic panic=10 console=tty0 console=ttyS0,115200n8
-
-LABEL debian-tegra-safe
-    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (manual GPU load)
-    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
-    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
-    FDT /boot/tegra210-p2371-2180-nvgpu-fan.dtb
-    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=nvgpu oops=panic panic=10 console=tty0 console=ttyS0,115200n8
-
-LABEL debian-tegra-emc-1600
-    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI (ACTMON up to 1600 MHz)
-    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
-    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
-    FDT /boot/tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb
-    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 modprobe.blacklist=$emc_blacklist debian_tegra.emc_1600=1 oops=panic panic=10 console=tty0 console=ttyS0,115200n8
+MENU TITLE Debian 13 - $board_title SD
 EOF
+write_boot_entry() {
+  local label=$1 title=$2 dtb=$3 extra_args=$4
+  cat >> "$extlinux_conf" <<EOF
+
+LABEL $label
+    MENU LABEL Debian 13 $DEBIAN_KERNEL_ABI ($title)
+    LINUX /boot/Image-$DEBIAN_KERNEL_ABI
+    INITRD /boot/initrd.img-$DEBIAN_KERNEL_ABI
+    FDT /boot/$dtb
+    APPEND \${cbootargs} root=PARTUUID=$partuuid rootfstype=ext4 rw rootwait net.ifnames=0 $extra_args oops=panic panic=10 console=tty0 console=ttyS0,115200n8
+EOF
+}
+if [[ -n $firmware_source || $target == tx1 ]]; then
+  write_boot_entry debian-tegra-gpu 'GPU enabled' "$boot_dtb" ''
+fi
+if [[ $target == tx1 ]]; then
+  write_boot_entry debian-tegra-ov5693 'GPU + OV5693 camera' "$camera_dtb" ''
+fi
+write_boot_entry debian-tegra-safe 'manual GPU load' "$boot_dtb" 'modprobe.blacklist=nvgpu'
+if [[ $target == tx1 ]]; then
+  emc_blacklist=tegra30_devfreq
+  if [[ $gpu_default == debian-tegra-safe ]]; then
+    emc_blacklist=nvgpu,$emc_blacklist
+  fi
+  write_boot_entry debian-tegra-emc-1600 'ACTMON up to 1600 MHz' "$emc_dtb" \
+    "modprobe.blacklist=$emc_blacklist debian_tegra.emc_1600=1"
+else
+  write_boot_entry debian-tegra-nano-emc 'Nano EMC up to 1600 MHz' "$emc_dtb" \
+    'modprobe.blacklist=nvgpu,tegra30_devfreq debian_tegra.nano_emc=1'
+fi
 
 umount -R "$root/dev"
 umount "$root/proc"
@@ -751,7 +792,7 @@ used_mib=$(du -sm "$root" | awk '{print $1}')
   echo "Root filesystem ($used_mib MiB) needs a larger --size-mib" >&2; exit 1;
 }
 truncate -s "${part_size_mib}M" "$part"
-mkfs.ext4 -F -q -b 4096 -L TEGRA-TX1-SD -m 1 -U "$fsuuid" \
+mkfs.ext4 -F -q -b 4096 -L "$fs_label" -m 1 -U "$fsuuid" \
   -O '^metadata_csum_seed,^orphan_file,^64bit' \
   -E lazy_itable_init=0,lazy_journal_init=0 -d "$root" "$part"
 e2fsck -fn "$part" > /project/out/$IMAGE_NAME.fsck.txt
@@ -762,7 +803,7 @@ temp_image=$(mktemp "/project/out/.${IMAGE_NAME}.XXXXXXXX")
 trap 'rm -f "$temp_image" "$temp_image.sha256"' EXIT
 truncate -s "${IMAGE_SIZE_MIB}M" "$temp_image"
 sgdisk -o -U "$diskuuid" "$temp_image"
-sgdisk -n 1:2048:0 -t 1:8300 -c 1:debian-tegra-tx1 \
+sgdisk -n 1:2048:0 -t 1:8300 -c "1:debian-tegra-$target" \
   -u 1:"$partuuid" -A 1:set:2 "$temp_image"
 dd if="$part" of="$temp_image" bs=1M seek=1 conv=notrunc,sparse status=none
 sgdisk -v "$temp_image"

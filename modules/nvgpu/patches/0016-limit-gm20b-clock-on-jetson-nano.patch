@@ -1,0 +1,67 @@
+diff --git a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/of.h>
+ #include <linux/clkdev.h>
+ #include <linux/of_platform.h>
+ #include <linux/debugfs.h>
+@@ -891,6 +892,15 @@
+ 	460800000, 537600000, 614400000, 691200000, 768000000,
+ 	844800000, 921600000, 998400000,
+ };
++
++/* The P3448-0000 Nano BSP limits the GPCPLL to 921.6 MHz. */
++static unsigned int tegra210_gpu_num_freqs(void)
++{
++	if (of_machine_is_compatible("nvidia,p3450-0000"))
++		return ARRAY_SIZE(tx1_gpu_freqs) - 1;
++
++	return ARRAY_SIZE(tx1_gpu_freqs);
++}
+ 
+ /* NVIDIA R32 Tegra210 NA GPCPLL CVB c0 values, corresponding to tx1_gpu_freqs.
+  * The remaining coefficients are shared: c1=8144, c2=-940, c3=808,
+@@ -948,7 +958,7 @@
+ 
+ 	if (!tx1_gpcclk)
+ 		return -ENODEV;
+-	if (rate > 998400000UL)
++	if (rate > tx1_gpu_freqs[tegra210_gpu_num_freqs() - 1])
+ 		return -ERANGE;
+ 
+ 	mutex_lock(&tx1_power.rate_lock);
+@@ -1217,7 +1227,7 @@
+ 	struct gk20a_platform *platform = gk20a_get_platform(dev);
+ 	struct gk20a *g = platform->g;
+ #ifdef NVGPU_TX1_PORT
+-	unsigned int i;
++	unsigned int i, num_freqs = tegra210_gpu_num_freqs();
+ #endif
+ 
+ 	/* make sure the clock is available */
+@@ -1225,10 +1235,10 @@
+ 		return rate;
+ 
+ #ifdef NVGPU_TX1_PORT
+-	for (i = 0; i < ARRAY_SIZE(tx1_gpu_freqs) - 1; i++)
++	for (i = 0; i < num_freqs - 1; i++)
+ 		if (rate <= tx1_gpu_freqs[i])
+ 			return tx1_gpu_freqs[i];
+-	return tx1_gpu_freqs[ARRAY_SIZE(tx1_gpu_freqs) - 1];
++	return tx1_gpu_freqs[num_freqs - 1];
+ #else
+ 	return clk_round_rate(clk_get_parent(g->clk.tegra_clk), rate);
+ #endif
+@@ -1239,7 +1249,7 @@
+ {
+ #ifdef NVGPU_TX1_PORT
+ 	*freqs = tx1_gpu_freqs;
+-	*num_freqs = ARRAY_SIZE(tx1_gpu_freqs);
++	*num_freqs = tegra210_gpu_num_freqs();
+ 	return 0;
+ #else
+ 	struct gk20a_platform *platform = gk20a_get_platform(dev);

@@ -1,0 +1,114 @@
+Subject: [PATCH] Support the Jetson Nano RAM code 0 EMC handoff and ACTMON
+
+Use the P3448-0000 Nano 4 GB CBoot table instead of the TX1 rates.
+The 204 MHz entry does not require training. Require training for
+1600 MHz and validate all ACTMON OPPs against the active EMC provider.
+
+--- a/drivers/memory/tegra/tegra210-emc-core.c
++++ b/drivers/memory/tegra/tegra210-emc-core.c
+@@ -1793,6 +1793,10 @@
+ 	408000, 665600, 800000, 1065600, 1331200, 1600000,
+ };
+ 
++static const u32 nano_emc_rates[] = {
++	204000, 1600000,
++};
++
+ static int tegra210_emc_read_cboot_timing(struct tegra210_emc *emc,
+ 					struct tegra210_emc_timing *timing,
+ 					const void *fdt, int node)
+@@ -1913,7 +1917,8 @@
+ #undef READ_U32
+ #undef READ_ARRAY
+ 
+-	if (timing->revision != 7 || !timing->trained ||
++	if (timing->revision != 7 ||
++	    (!timing->trained && (timing->rate > 204000 || timing->needs_training)) ||
+ 	    timing->num_mc_regs <= MC_EMEM_ARB_MISC0_INDEX ||
+ 	    timing->min_volt > 1100)
+ 		return -EINVAL;
+@@ -1923,6 +1928,7 @@
+ 
+ static int tegra210_emc_parse_cboot_fdt(struct tegra210_emc *emc, const void *fdt)
+ {
++	const u32 *rates = tx1_emc_rates;
+ 	const __be32 *value;
+ 	u32 ram_code = tegra_read_ram_code();
+ 	int controller, table, child, size, err;
+@@ -1943,10 +1949,20 @@
+ 	if (table < 0)
+ 		return -ENOENT;
+ 
+-	if (of_property_present(emc->dev->of_node, "nvidia,enable-emc-1600"))
++	if (of_machine_is_compatible("nvidia,p3450-0000")) {
++		if (!fdt_node_check_compatible(fdt, 0, "nvidia,jetson-nano-as-nano-lite") ||
++		    (fdt_node_check_compatible(fdt, 0, "nvidia,p3449-0000-b00+p3448-0000-b00") &&
++		     fdt_node_check_compatible(fdt, 0, "nvidia,p3449-0000-a02+p3448-0000-a02") &&
++		     fdt_node_check_compatible(fdt, 0, "nvidia,p3449-0000-a01+p3448-0000-a01")))
++			return -ENODEV;
++
++		rates = nano_emc_rates;
++		emc->num_timings = ARRAY_SIZE(nano_emc_rates);
++	} else if (of_property_present(emc->dev->of_node, "nvidia,enable-emc-1600")) {
+ 		emc->num_timings = ARRAY_SIZE(tx1_emc_rates);
+-	else
++	} else {
+ 		emc->num_timings = TX1_EMC_BASE_RATE_COUNT;
++	}
+ 	emc->nominal = devm_kcalloc(emc->dev, emc->num_timings, sizeof(*emc->nominal),
+ 				    GFP_KERNEL);
+ 	emc->derated = devm_kcalloc(emc->dev, emc->num_timings, sizeof(*emc->derated),
+@@ -1962,7 +1978,7 @@
+ 			continue;
+ 
+ 		for (i = 0; i < emc->num_timings; i++)
+-			if (tx1_emc_rates[i] == be32_to_cpup(value))
++			if (rates[i] == be32_to_cpup(value))
+ 				break;
+ 		if (i == emc->num_timings)
+ 			continue;
+--- a/drivers/devfreq/tegra30-devfreq.c
++++ b/drivers/devfreq/tegra30-devfreq.c
+@@ -895,12 +895,7 @@
+ 		return err;
+ 	}
+ 
+-	if (tegra->soc->direct_emc) {
+-		/* This P2180 table has a board-specific voltage floor in the EMC driver. */
+-		if (clk_round_rate(tegra->emc_clock, 408000000) != 408000000 ||
+-		    clk_round_rate(tegra->emc_clock, 800000000) != 800000000)
+-			return dev_err_probe(&pdev->dev, -EPROBE_DEFER, "waiting for trained EMC timings\n");
+-	} else {
++	if (!tegra->soc->direct_emc) {
+ 		err = devm_pm_opp_set_config(&pdev->dev, &config);
+ 		if (err)
+ 			return dev_err_probe(&pdev->dev, err, "Failed to set OPP config\n");
+@@ -910,6 +905,20 @@
+ 	if (err) {
+ 		dev_err(&pdev->dev, "Failed to add OPP table: %d\n", err);
+ 		return err;
++	}
++
++	if (tegra->soc->direct_emc) {
++		unsigned long freq = 0;
++		struct dev_pm_opp *opp;
++
++		/* The EMC provider keeps the rail at the floor required by its table. */
++		while (!IS_ERR(opp = dev_pm_opp_find_freq_ceil(&pdev->dev, &freq))) {
++			dev_pm_opp_put(opp);
++			if (clk_round_rate(tegra->emc_clock, freq) != freq)
++				return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
++						     "waiting for EMC timing at %lu Hz\n", freq);
++			freq++;
++		}
+ 	}
+ 
+ 	err = devm_tegra_devfreq_init_hw(&pdev->dev, tegra);
+@@ -979,6 +988,7 @@
+ 
+ static const struct of_device_id tegra_devfreq_of_match[] = {
+ 	{ .compatible = "nvidia,tegra210-tx1-actmon", .data = &tegra210_soc, },
++	{ .compatible = "nvidia,tegra210-nano-actmon", .data = &tegra210_soc, },
+ 	{ .compatible = "nvidia,tegra30-actmon",  .data = &tegra30_soc, },
+ 	{ .compatible = "nvidia,tegra124-actmon", .data = &tegra124_soc, },
+ 	{ },

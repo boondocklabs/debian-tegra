@@ -38,7 +38,7 @@ cat > index.html <<'EOF'
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><title>debian-tegra APT repository</title>
 <h1>debian-tegra APT repository</h1>
-<p>Debian 13 ARM64 packages for Jetson TX1.</p>
+<p>Debian 13 ARM64 packages for Jetson TX1 and Jetson Nano 4 GB.</p>
 <p><a href="archive-keyring.gpg">Archive signing key</a> ·
 <a href="SHA256SUMS">Package checksums</a> ·
 <a href="https://github.com/boondocklabs/debian-tegra">Source and instructions</a></p>

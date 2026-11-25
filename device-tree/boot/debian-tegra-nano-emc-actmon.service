@@ -1,0 +1,15 @@
+[Unit]
+Description=Start ACTMON for the Nano EMC boot entry
+ConditionKernelCommandLine=debian_tegra.nano_emc=1
+ConditionPathExists=/sys/firmware/devicetree/base/actmon@6000c800/compatible
+BindsTo=debian-tegra-nano-emc-watchdog.service
+After=debian-tegra-nano-emc-watchdog.service sys-kernel-debug.mount
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/grep -qw 1600000000 /sys/kernel/debug/emc/available_rates
+ExecStartPre=/usr/bin/grep -qw 204000000 /sys/kernel/debug/emc/available_rates
+ExecStartPre=/usr/sbin/sysctl -w kernel.hardlockup_panic=1
+ExecStart=/usr/sbin/modprobe tegra30_devfreq
+ExecStop=/usr/sbin/modprobe -r tegra30_devfreq
+RemainAfterExit=yes

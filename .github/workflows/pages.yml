@@ -1,8 +1,8 @@
-name: Publish TX1 APT repository
+name: Publish Tegra210 APT repository
 
 on:
   workflow_run:
-    workflows: [Build TX1 Debian packages]
+    workflows: [Build Tegra210 Debian packages]
     types: [completed]
   workflow_dispatch:
     inputs:

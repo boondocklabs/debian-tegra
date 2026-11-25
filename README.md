@@ -1,43 +1,48 @@
 # debian-tegra
 
-This project brings the NVIDIA Jetson TX1 Developer Kit (P2371-2180 module on
-the P2597 carrier) to a **Debian 13, Linux 6.12 kernel** while retaining its
-GM20B GPU through a port of NVIDIA's `nvgpu` driver. It builds an nvmap module
-for GPU memory sharing and device trees that enable the GPU and the carrier's
-fan. The aim is to run a current Debian userspace and kernel with the TX1 GPU,
-including a path to CUDA 12 applications.
+Run **Debian 13 with Linux 6.12** on the NVIDIA Jetson TX1 Developer Kit or
+Jetson Nano 4 GB Developer Kit. Both targets share the Tegra210 kernel and
+the port of NVIDIA's `nvgpu` and `nvmap` drivers for the GM20B GPU. Each board
+has a separate device-tree package and bootable SD image. CUDA 12.6 has
+been tested on both boards. The Nano boots from microSD and displays the
+Debian console over HDMI.
 
 ## Supported hardware and software
 
 | Component | Supported or tested version |
 | --- | --- |
-| Board | NVIDIA Jetson TX1 Developer Kit, P2371-2180 module on the P2597 carrier |
+| TX1 | P2371-2180 on the P2597 carrier. Boot, display, and GPU tested on hardware. |
+| Jetson Nano 4 GB | P3448-0000 on the P3449 carrier (P3450-0000 board tree). MicroSD boot and HDMI console verified on hardware. |
 | CPU and GPU | ARM64 Cortex-A57 and Tegra210 GM20B (Maxwell, CUDA SM 5.3) |
+| Power monitoring | INA3221 hwmon. Nano monitors 5 V input, CPU, and GPU. TX1 lists the module monitor and two P2597 carrier monitors. |
+| Overcurrent telemetry | jtop reads Tegra210 OC1–OC4 hardware counters through `soctherm_oc` hwmon. |
 | Operating system | Debian 13 (Trixie), arm64 |
-| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra5` |
-| Boot firmware | Jetson Linux R32.7.6 CBoot and U-Boot 2020.04 on eMMC, with SD boot via extlinux |
-| Display and peripherals | HDMI DRM, P2597 PWM fan, BCM4354 Wi-Fi and Bluetooth, optional OV5693 CSI camera |
-| Memory scaling | RAM code 0, ACTMON at 408–800 MHz or up to 1,600 MHz on the watchdog-guarded entry |
-| GPU userspace | Experimental R36.5.1 `libcuda`, CUDA 12.6 toolkit, CUDA Runtime 12.6.77, cuBLAS 12.6.0.22 |
-| Optional libraries and monitoring | cuDNN 9.3.0 tested; jtop 7.3.0 included in the SD image |
+| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra12` |
+| Boot firmware | Jetson Linux R32.7.6 CBoot and U-Boot 2020.04, with SD boot via extlinux. TX1 boots from eMMC firmware and Nano from QSPI-NOR firmware. |
+| TX1 display and peripherals | HDMI DRM, P2597 PWM fan, BCM4354 Wi-Fi and Bluetooth, optional OV5693 CSI camera |
+| TX1 memory scaling | RAM code 0, ACTMON at 408–800 MHz or up to 1,600 MHz on the watchdog-guarded entry |
+| Nano memory scaling | RAM code 0, watchdog-guarded ACTMON at 204 and 1,600 MHz on the default entry |
+| GPU userspace tested on both boards | Experimental R36.5.1 `libcuda`, CUDA 12.6 toolkit, CUDA Runtime 12.6.77, cuBLAS 12.6.0.22 |
+| Libraries and monitoring | cuDNN 9.3.0 included in CUDA-enabled SD images and tested on TX1; jtop 7.3.0 included in the SD image |
 
 The port has been exercised on a TX1 with NVIDIA R36.5.1 `libcuda` and CUDA
 12.6.77 `libcudart`: the CUDA driver API enumerated the GM20B GPU, copied
 memory, JIT-loaded SM 5.3 PTX, launched a kernel, and read back its result.
 The CUDA runtime also completed a memory round trip. This is an experimental
 compatibility result, not NVIDIA support for TX1 on R36.5 or a claim that
-every CUDA 12 release works. The hardware results below were measured on a
+every CUDA 12 release works. The CUDA results below were measured on a
 physical TX1 Developer Kit. GitHub Actions verifies the package builds.
 
 ## What it builds
 
 | Package | Contents |
 | --- | --- |
-| `linux-image-6.12.118-tegra-tx1` | Debian 13 kernel with the TX1 SMMU DMA patch |
+| `linux-image-6.12.118-tegra-tx1` | Shared Debian 13 kernel with the Tegra210 GPU SMMU DMA patch |
 | `linux-headers-6.12.118-tegra-tx1` | Matching headers for external modules |
 | `debian-tegra-nvmap-tx1` | Patched NVIDIA nvmap module |
-| `debian-tegra-nvgpu-tx1` | Patched NVIDIA nvgpu module for GM20B |
+| `debian-tegra-nvgpu-tx1` | Patched NVIDIA nvgpu module for GM20B. Nano support starts with revision `6.12.118-1+tegra6`. |
 | `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI and EMC overlays |
+| `debian-tegra-nano-device-tree` | GPU-enabled P3450-0000 DTBs with HDMI DDC, INA3221 power monitoring, and watchdog-guarded EMC support |
 
 The kernel comes from Debian's `6.12.118-1` source package. Its URL and
 SHA-256 are pinned in [build-kernel.sh](scripts/build-kernel.sh). The
@@ -46,7 +51,8 @@ SHA-256 are pinned in [build-kernel.sh](scripts/build-kernel.sh). The
 [fan overlay](device-tree/tx1-fan.dtso), [OV5693 overlay](device-tree/tx1-ov5693.dtso),
 and [EMC overlay](device-tree/tx1-emc.dtso) are checked in. The kernel ABI
 is `6.12.118-tegra-tx1`; the module and device tree packages depend on that
-exact kernel version.
+exact kernel version. The kernel ABI and shared package names retain their
+original `tx1` suffix on both boards.
 
 The compact TX1 config removes Nouveau, other unused SoC families, DVB/radio, and legacy
 network and USB serial drivers while retaining KVM/virtio and common USB and
@@ -57,8 +63,7 @@ boot menu entry selects that DTB while the default keeps camera probing off.
 Tegra `host1x`, DRM display, I2C, and display regulators are built in so the HDMI
 framebuffer console can appear during kernel initialization. NVIDIA `nvgpu`
 and `nvmap` remain separate upgradeable module packages; early display does
-not require the compute GPU driver. The build uses `-mtune=cortex-a57` and
-package revision `6.12.118-1+tegra5`. The kernel, HDMI DRM connector,
+not require the compute GPU driver. The build uses `-mtune=cortex-a57`. The kernel, HDMI DRM connector,
 GPU modules, XUSB, Wi-Fi, and Bluetooth have booted on the TX1 developer kit.
 The OV5693 boot entry exposes the E3326 sensor through V4L2 as 10-bit
 Bayer (`BG10`). The two tested capture sizes are 2592×1944 and 1296×972.
@@ -128,25 +133,37 @@ bash scripts/build-all.sh
 The `.deb` files and `SHA256SUMS` appear in `out/`. The
 [GitHub Actions workflow](.github/workflows/build.yml) builds the kernel image
 and headers together, then runs nvmap, nvgpu, and device tree jobs separately.
-It uploads both individual job artifacts and a combined five-package artifact.
+It uploads individual job artifacts and a combined six-package artifact.
 The kernel source is compiled in a case-sensitive Docker volume so the local
 build also works from a macOS checkout.
 Pushes and pull requests run this build only when build inputs or the build
 workflow change. README and APT publishing changes do not rebuild packages;
 the build can still be started manually from GitHub Actions.
 
-The device tree package installs files under
-`/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/`. Select the GPU or GPU/fan
-DTB in the board's bootloader configuration. Installing these packages does
-not change the bootloader.
+The device-tree packages install their DTBs under
+`/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/`. Select the matching board
+DTB in the bootloader configuration.
 
-## Bootable TX1 SD image
+## Bootable SD images
 
-With Docker on an ARM64 host, build an 8 GiB Debian 13 SD image using the five
+Choose the board with `--target` when you build the image. Use the generated
+image for that board when writing the SD card.
+
+| Board | Builder option | Output image |
+| --- | --- | --- |
+| Jetson TX1 Developer Kit | `--target tx1` (default) | `out/debian-tegra-tx1-sd.img` |
+| Jetson Nano 4 GB Developer Kit (P3448-0000) | `--target nano` | `out/debian-tegra-nano-sd.img` |
+
+The Nano option is for the 4 GB microSD developer kit. Follow the boot
+firmware and writing instructions for the selected board below.
+
+### Jetson TX1
+
+With Docker on an ARM64 host, build a 10 GiB Debian 13 SD image using the five
 version-pinned packages from the signed APT repository:
 
 ```sh
-bash scripts/create-sd-image.sh --authorized-keys ~/.ssh/id_ed25519.pub
+bash scripts/create-sd-image.sh --target tx1 --authorized-keys ~/.ssh/id_ed25519.pub
 ```
 
 To test newly built packages before repository publication, run
@@ -156,7 +173,7 @@ builder. The image still gets Debian base packages from Debian's mirror.
 The output is `out/debian-tegra-tx1-sd.img` with a SHA-256 file beside it. Use
 `--size-mib` for a larger card, `--output` for another filename, and `--force`
 to replace an existing output. Use a 16 GB or larger SD card for the default
-8 GiB image. The builder uses privileged Docker for its debootstrap chroot
+10 GiB image. The builder uses privileged Docker for its debootstrap chroot
 mounts and verifies the APT signing key fingerprint before installing the
 packages. It creates a `debian` account with the supplied SSH key and
 passwordless sudo, verifies that `debian` can run `sudo -n true`, installs
@@ -223,12 +240,83 @@ image; it is not committed, built in CI, or published in the APT repository.
 Debian package updates within the same kernel ABI use APT; a new kernel ABI requires
 updating the boot entry or rebuilding the image.
 
+### Jetson Nano 4 GB
+
+Build a microSD image for the Jetson Nano 4 GB Developer Kit (P3448-0000
+module, P3449 carrier). The board needs the [Jetson Linux R32.7.6 QSPI boot
+firmware][nano-bsp] in place. NVIDIA moved the boot chain to QSPI starting in
+R32.5. For boards on older firmware, use NVIDIA's
+[`jetson-nano-qspi` flashing configuration][nano-qspi] before trying this
+image. The Debian image contains one GPT ext4 partition and the U-Boot
+extlinux menu.
+
+```sh
+bash scripts/create-sd-image.sh --target nano --authorized-keys ~/.ssh/id_ed25519.pub
+```
+
+This writes `out/debian-tegra-nano-sd.img` and its SHA-256 file. Use the
+same macOS write commands above with the Nano filename. The builder
+installs the shared kernel, nvmap, and nvgpu packages along with the Nano
+DTB. It adds NVIDIA GM20B and Tegra210 firmware from the R32.7.6 BSP and
+Debian's `firmware-realtek` for wired Ethernet and `firmware-iwlwifi` with
+`wireless-regdb` for Intel Wi-Fi and Bluetooth cards such as the 8265. With
+an Ethernet connection, use `ssh debian@jetson-nano.local`.
+
+The Nano device-tree package keeps GPIO PA6
+asserted to power the HDMI DDC level shifter after CBoot hands off to Linux.
+When updating an existing SD image, reboot after the package refreshes
+the DTB in `/boot`.
+
+The default Nano EMC entry leaves GPU loading manual.
+With firmware installed, select **GPU enabled** in the U-Boot menu, or
+run `sudo modprobe nvgpu` after Debian starts. The shared nvgpu module caps
+the Nano GPU at 921.6 MHz. The image includes CUDA 12.6, R36.5.1 GPU
+userspace, and cuDNN 9.3.0 by default. On the Nano, an on-device SM 5.3
+compilation and all seven CUDA library probes passed. The Nano benchmark
+results are included [below](#cuda-benchmarks). For a smaller initial boot
+image, add `--no-cuda --size-mib 2048`. To use unpublished packages from a
+local build, add `--local-packages out`.
+
+#### Nano power and overcurrent monitoring
+
+The onboard INA3221 exposes voltage and current for the 5 V input, GPU,
+and CPU through `hwmon`. The device tree uses the rail order for the
+P3448-0000 production revision used on the test board. The shared kernel
+also exposes the Tegra210 OC1–OC4 hardware event counts through
+`soctherm_oc`. jtop 7.3.0 found all four counters on the Nano in its
+**SYSFS** page. All four read zero during the check.
+
+#### Nano EMC and ACTMON
+
+The **Nano EMC up to 1600 MHz** entry is the default on the Nano SD image.
+It uses the RAM-code-0 Jetson Linux R32.7.6 CBoot handoff for the 4 GB kit. The kernel uses
+the Nano's 204 MHz and trained 1,600 MHz timings from its own CBoot DTB. The
+boot service arms the 64-second MAX77620 watchdog and checks both rates
+before loading ACTMON. **Manual GPU load** provides a recovery entry with
+the standard device tree.
+
+On a P3448-0000/P3449 B01 kit, a 20-second, four-thread memory test reached
+1,600 MHz in 198 of 199 samples and first returned to 204 MHz 1.91 seconds
+after load ended. All 1,243 32 MiB copies passed comparison.
+
+For an existing installation, use the updated kernel and Nano DTB packages.
+Copy `tegra210-p3450-0000-nvgpu-emc.dtb` from the packaged kernel DTB directory
+to `/boot` and duplicate the standard extlinux entry with a unique label.
+Set the new entry's `FDT` to that file, add `tegra30_devfreq` to its existing
+`modprobe.blacklist` list, and append `debian_tegra.nano_emc=1`. Select the new
+entry at boot, or set the extlinux `DEFAULT` to its label.
+
+[nano-bsp]: https://developer.nvidia.com/embedded/linux-tegra-r3276
+[nano-qspi]: https://docs.nvidia.com/jetson/archives/l4t-archived/l4t-3275/Tegra%20Linux%20Driver%20Package%20Development%20Guide/adaptation_and_bringup_nano.html
+
 ## CUDA userspace
 
 By default, the SD image builder installs NVIDIA's full ARM64 Jetson
 `cuda-toolkit-12-6` package set from NVIDIA's CUDA repository. This includes
 `nvcc`, headers, development tools, and the cuBLAS, cuFFT, cuRAND, cuSOLVER,
-cuSPARSE, and NVRTC libraries. It also downloads the R36.5.1
+cuSPARSE, and NVRTC libraries. The builder also installs the cuDNN 9.3.0
+runtime (`libcudnn9-cuda-12=9.3.0.75-1`), the version tested on both boards.
+It downloads the R36.5.1
 `nvidia-l4t-cuda`, `nvidia-l4t-core`, and `nvidia-l4t-3d-core` packages,
 verifies their pinned SHA-256 hashes, and places their driver and PTX JIT
 libraries under `/opt/debian-tegra/`. The toolkit packages are tracked by
@@ -242,8 +330,9 @@ CUDA 12.6 and applies a four-declaration `noexcept` compatibility adjustment
 to NVIDIA's CUDA header for Debian 13's glibc 2.41. It compiles a small
 SM 5.3 program during the build to verify that toolchain.
 
-The default image is 8192 MiB to fit the toolkit. Use `--no-cuda` for a
-smaller image (minimum 2048 MiB). The builder uses NVIDIA's signed repository
+The default image is 10240 MiB to fit the toolkit and cuDNN. With
+`--no-cuda`, the builder skips both and defaults to 8192 MiB, with a
+minimum of 2048 MiB. The builder uses NVIDIA's signed repository
 only while building and removes its source and key from the finished image.
 NVIDIA's current key uses a SHA-1 binding rejected by Debian 13's default
 verifier, so the builder uses `gpgv` with the SHA-256-pinned key for that
@@ -252,25 +341,25 @@ image; this repository, CI, and the debian-tegra APT repository do not
 redistribute them.
 
 The R36.5.1 driver, CUDA 12.6 toolkit, and selected cuBLAS runtime passed
-CUDA, cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, and NVRTC probes on a
-physical TX1. cuDNN is a separate package and is not included.
+CUDA, cuBLAS, cuFFT, cuRAND, cuSOLVER, cuSPARSE, and NVRTC probes on
+both development kits.
 
 ## CUDA hardware tests
 
 The test script uses the local SD image as a read-only ARM64 build root inside
-Docker, compiles an SM 5.3 probe on the host, copies it to the TX1, and runs
-the seven tests separately over SSH:
+Docker, compiles an SM 5.3 probe on the host, copies it to the board, and
+runs the seven tests separately over SSH.
 
 ```sh
 bash scripts/test-cuda.sh --target debian@jetson-tx1.local
+bash scripts/test-cuda.sh --image out/debian-tegra-nano-sd.img --target debian@jetson-nano.local
 ```
 
 Use `--image FILE` for another image, `--build-only` to compile without SSH,
 or `--known-hosts FILE` to select a verified SSH host-key file. Rebuilt images
 generate new SSH host keys on first boot, so verify a changed key on the serial
 console before updating your known-hosts entry. The probe results are printed
-individually and the script fails if any test fails. All seven probes passed
-on a TX1 with the ported Host1x fence interface.
+individually and the script fails if any test fails.
 
 ## CUDA benchmarks
 
@@ -278,23 +367,26 @@ on a TX1 with the ported Host1x fence interface.
 bash scripts/test-cuda.sh --benchmark --seconds 15 --target debian@jetson-tx1.local
 ```
 
-The table compares three runs on the same TX1 (GM20B, SM 5.3) with CUDA 12.6,
-cuBLAS 12.6.0.22, and cuDNN 9.3. The first two runs used at least 15 seconds
-per workload. The last used at least 5 seconds per workload and included
-FP16 HGEMM. Both 1,600 MHz runs used the development build that validated
-the higher-rate opt-in configuration.
+The benchmarks used CUDA 12.6, cuBLAS 12.6.0.22, and cuDNN 9.3. The
+first two TX1 runs used at least 15 seconds per workload. The final TX1
+run used at least 5 seconds per workload and included FP16 HGEMM. Both
+TX1 runs at 1,600 MHz used the development build that validated the opt-in
+configuration. The Nano run used at least 15 seconds per workload with
+its default ACTMON entry and the GPU scaling up to 921.6 MHz. EMC stayed
+at 1,600 MHz during the sustained run and was back at 204 MHz after three
+seconds idle.
 
-| Workload | ACTMON up to 800 MHz | Fixed 1,600 MHz | ACTMON up to 1,600 MHz |
-| --- | ---: | ---: | ---: |
-| CUDA 32 MiB device-to-device copy | 4.33 GB/s | 9.17 GB/s | 9.10 GB/s |
-| cuBLAS 1024 × 1024 FP32 SGEMM | 302.18 GFLOP/s | 386.72 GFLOP/s | 384.66 GFLOP/s |
-| cuBLAS 1024 × 1024 FP16 HGEMM | — | — | **869.52 GFLOP/s** |
-| cuFFT FP32 C2C, length 4096, batch 64 | 125,650 transforms/s | 253,327 transforms/s | 251,232 transforms/s |
-| cuRAND 1,048,576 uniform FP32 values | 1.84 Gvalues/s | 3.78 Gvalues/s | 3.83 Gvalues/s |
-| cuSOLVER 512 × 512 FP32 Cholesky | 16.00 GFLOP/s | 22.00 GFLOP/s | 22.00 GFLOP/s |
-| cuSPARSE FP32 CSR SpMV, 1,835,008 nonzeros | 0.81 Gnonzeros/s | 1.56 Gnonzeros/s | 1.56 Gnonzeros/s |
-| cuDNN FP32 3 × 3 convolution, 32 input and output channels | 164.32 GFLOP/s | 166.78 GFLOP/s | 166.75 GFLOP/s |
-| NVRTC SM 5.3 SAXPY compilation | 104.23 ms | 95.03 ms | 94.58 ms |
+| Workload | TX1 ACTMON up to 800 MHz | TX1 fixed 1,600 MHz | TX1 ACTMON up to 1,600 MHz | Nano ACTMON up to 1,600 MHz |
+| --- | ---: | ---: | ---: | ---: |
+| CUDA 32 MiB device-to-device copy | 4.33 GB/s | 9.17 GB/s | 9.10 GB/s | 8.62 GB/s |
+| cuBLAS 1024 × 1024 FP32 SGEMM | 302.18 GFLOP/s | 386.72 GFLOP/s | 384.66 GFLOP/s | 180.04 GFLOP/s |
+| cuBLAS 1024 × 1024 FP16 HGEMM | — | — | **869.52 GFLOP/s** | 407.93 GFLOP/s |
+| cuFFT FP32 C2C, length 4096, batch 64 | 125,650 transforms/s | 253,327 transforms/s | 251,232 transforms/s | 174,866 transforms/s |
+| cuRAND 1,048,576 uniform FP32 values | 1.84 Gvalues/s | 3.78 Gvalues/s | 3.83 Gvalues/s | 3.94 Gvalues/s |
+| cuSOLVER 512 × 512 FP32 Cholesky | 16.00 GFLOP/s | 22.00 GFLOP/s | 22.00 GFLOP/s | 17.90 GFLOP/s |
+| cuSPARSE FP32 CSR SpMV, 1,835,008 nonzeros | 0.81 Gnonzeros/s | 1.56 Gnonzeros/s | 1.56 Gnonzeros/s | 1.18 Gnonzeros/s |
+| cuDNN FP32 3 × 3 convolution, 32 input and output channels | 164.32 GFLOP/s | 166.78 GFLOP/s | 166.75 GFLOP/s | 80.22 GFLOP/s |
+| NVRTC SM 5.3 SAXPY compilation | 104.23 ms | 95.03 ms | 94.58 ms | 99.27 ms |
 
 D2D throughput counts payload bytes copied. Each copy reads the payload and
 writes it, so 9.17 GB/s of payload corresponds to 18.34 GB/s of effective
@@ -307,10 +399,10 @@ averages. NVRTC reports median host time for at least five compilations after
 a warmup compile. `--seconds` repeats each workload to meet the minimum wall
 time after warmup. Setup and validation are outside the reported timings.
 
-cuDNN is optional. The benchmark uses the installed cuDNN 8 or 9 runtime
-when it can load one, and skips convolution when neither is available.
-The [cuDNN 9.3.0 Jetson ARM64 package][cudnn-tx1] passed the TX1 benchmark.
-To try it without installing a system package, extract it on the TX1 with
+The benchmark uses the installed cuDNN 8 or 9 runtime and skips convolution
+when neither is available. The default SD image provides the
+[cuDNN 9.3.0 Jetson ARM64 package][cudnn-tx1] that passed the TX1 benchmark.
+On an older CUDA-enabled image, you can extract the runtime locally with
 `dpkg-deb -x libcudnn9-cuda-12_9.3.0.75-1_arm64.deb ~/cudnn-9.3`.
 Then add `--cudnn-lib-dir /home/debian/cudnn-9.3/usr/lib/aarch64-linux-gnu`
 to the benchmark command. That option makes a missing runtime an error.
@@ -320,13 +412,15 @@ to the benchmark command. That option makes a missing runtime an error.
 ## APT repository
 
 The signed Debian 13 ARM64 repository at
-<https://boondocklabs.github.io/debian-tegra/> provides the TX1 kernel image,
-headers, nvmap, nvgpu, and device tree packages. The SD image builder adds
+<https://boondocklabs.github.io/debian-tegra/> provides the shared Tegra210 kernel image,
+headers, nvmap, and nvgpu, plus separate TX1 and Nano device-tree packages. The SD image builder adds
 this source and installs the pinned package versions for you.
 
 The archive key fingerprint is
 `0F24 8B4E 0026 1A42 AC3E CC19 C078 7BB2 FD9D 04B6`.
-On a Debian 13 TX1 system, add the repository and packages with:
+On a Debian 13 Jetson system, add the repository and packages. The example
+uses `debian-tegra-tx1-device-tree`. For the Nano, use
+`debian-tegra-nano-device-tree` in the install command.
 
 ```sh
 curl -fsSL https://boondocklabs.github.io/debian-tegra/archive-keyring.gpg \

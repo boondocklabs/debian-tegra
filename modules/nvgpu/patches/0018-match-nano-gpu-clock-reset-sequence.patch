@@ -1,0 +1,65 @@
+Subject: [PATCH] Gate the Jetson Nano GPU clock while releasing reset
+
+Follow the T210 GM20B rail sequence used by the NVIDIA Nano BSP.
+
+--- a/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
++++ b/drivers/gpu/nvgpu/os/linux/platform_gk20a_tegra.c
+@@ -997,6 +997,8 @@
+ static int tx1_gpu_unrailgate(struct device *dev)
+ {
+ 	struct gk20a_platform *platform = dev_get_drvdata(dev);
++	bool nano = of_machine_is_compatible("nvidia,p3450-0000");
++	bool gpu_clock_enabled;
+ 	int err;
+ 
+ 	if (tx1_power.powered)
+@@ -1008,7 +1010,7 @@
+ 	/* P3448's BSP programs a 1 V GPU rail before releasing reset.
+ 	 * The PWM regulator otherwise starts at the bottom of its range.
+ 	 */
+-	if (of_machine_is_compatible("nvidia,p3450-0000")) {
++	if (nano) {
+ 		int voltage = regulator_get_voltage(tx1_power.vdd);
+ 
+ 		if (voltage < 0)
+@@ -1026,6 +1028,7 @@
+ 	err = clk_prepare_enable(tx1_power.gpu);
+ 	if (err)
+ 		goto disable_vdd;
++	gpu_clock_enabled = true;
+ 	err = clk_prepare_enable(tx1_power.ref);
+ 	if (err)
+ 		goto disable_gpu;
+@@ -1047,9 +1050,21 @@
+ 			goto disable_pwr;
+ 		udelay(10);
+ 	}
++	/* Match the P3448 BSP: the GPU gate must be off when reset is released. */
++	if (nano) {
++		clk_disable(tx1_power.gpu);
++		gpu_clock_enabled = false;
++	}
+ 	err = reset_control_deassert(platform->reset_control);
+ 	if (err)
+ 		goto disable_pwr;
++	if (nano) {
++		err = clk_enable(tx1_power.gpu);
++		if (err) {
++			reset_control_assert(platform->reset_control);
++			goto disable_pwr;
++		}
++	}
+ 	udelay(10);
+ 	tx1_power.powered = true;
+ 	return 0;
+@@ -1059,7 +1074,9 @@
+ disable_ref:
+ 	clk_disable_unprepare(tx1_power.ref);
+ disable_gpu:
+-	clk_disable_unprepare(tx1_power.gpu);
++	if (gpu_clock_enabled)
++		clk_disable(tx1_power.gpu);
++	clk_unprepare(tx1_power.gpu);
+ disable_vdd:
+ 	regulator_disable(tx1_power.vdd);
+ 	return err;
