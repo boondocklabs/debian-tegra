@@ -14,7 +14,11 @@ test -n "${APT_SIGNING_KEY:-}" || {
 }
 mkdir -p "$repo/pool/main" "$repo/dists/trixie/main/binary-arm64"
 find "$packages" -maxdepth 1 -type f -name '*.deb' -exec cp -f {} "$repo/pool/main/" \;
-test "$(find "$repo/pool/main" -maxdepth 1 -name '*.deb' | wc -l)" -eq 5
+package_count=$(find "$repo/pool/main" -maxdepth 1 -type f -name '*.deb' | wc -l)
+if (( package_count != 6 )); then
+  echo "Expected 6 Tegra210 packages, found $((package_count))" >&2
+  exit 1
+fi
 cp "$packages/SHA256SUMS" "$repo/SHA256SUMS"
 cd "$repo"
 dpkg-scanpackages -m pool/main /dev/null > dists/trixie/main/binary-arm64/Packages
