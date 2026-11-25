@@ -6,7 +6,7 @@ source_url=https://deb.debian.org/debian-security/pool/updates/main/l/linux/linu
 source_sha256=b75bb2e78a5c7762254e2af7685085c788a67eb342cb4092ad2a05eaf9fc33b7
 source_deb=cache/linux-source-6.12_6.12.118-1_all.deb
 kernel_abi=6.12.118-tegra-tx1
-package_version=6.12.118-1+tegra13
+package_version=6.12.118-1+tegra14
 imx477_commit=8f5f2e15840330091c7116b2ef9454108d4bc423
 imx477_source=cache/imx477-$imx477_commit.c
 imx477_url=https://raw.githubusercontent.com/raspberrypi/linux/$imx477_commit/drivers/media/i2c/imx477.c
@@ -46,6 +46,7 @@ if [[ ${1:-} == --container ]]; then
     CONFIG_MULTIPLEXER=m CONFIG_MUX_GPIO=m CONFIG_I2C_MUX_GPMUX=m CONFIG_SPI_MUX=m \
     CONFIG_TEGRA210_ADMA=y CONFIG_SND_SOC_TEGRA210_ADMAIF=m CONFIG_SND_SOC_TEGRA210_AHUB=m \
     CONFIG_SND_SOC_TEGRA210_I2S=m CONFIG_SND_SOC_TEGRA_AUDIO_GRAPH_CARD=m \
+    CONFIG_SND_SOC_SSM2518=m \
     CONFIG_PCI_TEGRA=y CONFIG_USB_XHCI_TEGRA=m \
     CONFIG_USB_STORAGE=m CONFIG_AHCI_TEGRA=m CONFIG_BLK_DEV_NVME=m \
     CONFIG_BRCMFMAC=m CONFIG_VIDEO_TEGRA=m \

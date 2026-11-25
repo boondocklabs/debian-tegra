@@ -17,9 +17,9 @@ Debian console over HDMI.
 | Power monitoring | INA3221 hwmon. Nano monitors 5 V input, CPU, and GPU. TX1 lists the module monitor and two P2597 carrier monitors. |
 | Overcurrent telemetry | jtop reads Tegra210 OC1–OC4 hardware counters through `soctherm_oc` hwmon. |
 | Operating system | Debian 13 (Trixie), arm64 |
-| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra13` |
+| Kernel | Linux 6.12.118, Debian package revision `6.12.118-1+tegra14` |
 | Boot firmware | Jetson Linux R32.7.6 CBoot and U-Boot 2020.04, with SD boot via extlinux. TX1 boots from eMMC firmware and Nano from QSPI-NOR firmware. |
-| TX1 display and peripherals | HDMI DRM, P2597 PWM fan, BCM4354 Wi-Fi and Bluetooth, optional OV5693 CSI camera |
+| TX1 display and peripherals | HDMI DRM, P2597 PWM fan, BCM4354 Wi-Fi and Bluetooth, optional OV5693 CSI camera and J21 I²S1 playback with SSM2518 (tested on hardware) |
 | TX1 memory scaling | RAM code 0, ACTMON at 408–800 MHz or up to 1,600 MHz on the watchdog-guarded entry |
 | Nano memory scaling | RAM code 0, watchdog-guarded ACTMON at 204 and 1,600 MHz on the default entry |
 | GPU userspace tested on both boards | Experimental R36.5.1 `libcuda`, CUDA 12.6 toolkit, CUDA Runtime 12.6.77, cuBLAS 12.6.0.22 |
@@ -41,7 +41,7 @@ physical TX1 Developer Kit. GitHub Actions verifies the package builds.
 | `linux-headers-6.12.118-tegra-tx1` | Matching headers for external modules |
 | `debian-tegra-nvmap-tx1` | Patched NVIDIA nvmap module |
 | `debian-tegra-nvgpu-tx1` | Patched NVIDIA nvgpu module for GM20B. Nano support starts with revision `6.12.118-1+tegra6`. |
-| `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI and EMC overlays |
+| `debian-tegra-tx1-device-tree` | GPU-enabled DTB, P2597 fan, and optional OV5693 CSI, J21 SSM2518 audio, and EMC overlays |
 | `debian-tegra-nano-device-tree` | GPU-enabled P3450-0000 DTBs with HDMI DDC, INA3221 power monitoring, watchdog-guarded EMC, and optional IMX477 CAM0 |
 
 The kernel comes from Debian's `6.12.118-1` source package. Its URL and
@@ -121,6 +121,42 @@ the current EMC clock and ACTMON’s transition counters.
 sudo cat /sys/kernel/debug/clk/emc/clk_rate
 cat /sys/class/devfreq/6000c800.actmon/trans_stat
 ```
+
+## TX1 J21 I²S1 audio
+
+The **GPU + OV5693 camera + J21 SSM2518** SD boot entry enables the P2597
+header's I²S1 output and the SSM2518 on the J21 I²C bus at address `0x34`.
+
+| J21 pin | Signal |
+| --- | --- |
+| 3 | I²C SDA |
+| 5 | I²C SCL |
+| 7 | MCLK (12.288 MHz) |
+| 12 | I²S BCLK |
+| 35 | I²S LRCLK |
+| 39 | Ground (connect to amplifier GND) |
+| 40 | I²S playback data |
+
+The device tree sets the Tegra audio pads to 1.8 V to match the TX1 module's
+I/O rail. Set the P2597 J24 jumper to match the amplifier's I²S logic level. J24
+pins 1–2 select 3.3 V, and pins 2–3 select 1.8 V. J21 pins 3 and 5 use
+3.3 V independently of J24.
+
+For an existing installation, copy
+`tegra210-p2371-2180-nvgpu-fan-ov5693-ssm2518.dtb` from
+`/usr/lib/linux-image-6.12.118-tegra-tx1/nvidia/` to `/boot/` and use it
+as the `FDT` in a copy of your TX1 boot entry with a unique label.
+
+Install `alsa-utils` and connect the APE playback PCM to I²S1.
+
+```sh
+sudo amixer -D hw:APE cset name='I2S1 Mux' ADMAIF1
+sudo alsactl store APE
+```
+
+The hardware playback device is `hw:APE,0` at 48 kHz, stereo, `S32_LE`.
+Use a crossover or other speaker protection appropriate to the connected
+speakers, especially with a tweeter directly connected to one amp channel.
 
 ## Build
 

@@ -42,6 +42,13 @@ fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan.dtb" \
   "$dest/tegra210-p2371-2180-ov5693.dtbo"
 test "$(fdtget -t s "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
   /host1x@50000000/i2c@546c0000/camera@36 compatible)" = ovti,ov5693
+ssm2518_overlay="$dest/tegra210-p2371-2180-j21-ssm2518.dtbo"
+ssm2518_dtb="$dest/tegra210-p2371-2180-nvgpu-fan-ov5693-ssm2518.dtb"
+dtc -@ -I dts -O dtb -o "$ssm2518_overlay" /project/device-tree/tx1-j21-ssm2518.dtso
+fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
+  -o "$ssm2518_dtb" "$ssm2518_overlay"
+test "$(fdtget -t s "$ssm2518_dtb" /i2c@7000c000/amp@34 compatible)" = adi,ssm2518
+test "$(fdtget -t u "$ssm2518_dtb" /pmc@7000e400/pinmux/j21-audio-1v8 power-source)" = 0
 dtc -@ -I dts -O dtb -o "$dest/tegra210-p2371-2180-emc.dtbo" \
   /project/device-tree/tx1-emc.dtso
 fdtoverlay -i "$dest/tegra210-p2371-2180-nvgpu-fan-ov5693.dtb" \
@@ -82,8 +89,9 @@ Maintainer: debian-tegra <maintainers@example.invalid>
 Depends: linux-image-$DEBIAN_KERNEL_ABI (= $DEBIAN_KERNEL_VERSION), python3, kmod, systemd, procps
 Section: kernel
 Priority: optional
-Description: TX1 GPU, fan, and OV5693 device trees for Debian 13
- GPU-enabled P2371-2180 tree, P2597 fan, and optional OV5693 CSI and EMC overlays.
+Description: TX1 device trees for Debian 13
+ GPU-enabled P2371-2180 tree with P2597 fan and optional OV5693 CSI,
+ J21 SSM2518 audio, and EMC overlays.
 EOF
 cat > "$stage/usr/share/doc/$name/README" <<EOF
 The GPU-enabled and fan-enabled DTBs are installed under

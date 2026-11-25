@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+/plugin/;
+
+/* P2597 J21: DAP1, AUD_MCLK, and GEN1 I2C. */
+&pinmux {
+	j21_i2s1_pins: j21-i2s1 {
+		i2s-output {
+			nvidia,pins = "dap1_sclk_pb3", "dap1_fs_pb0", "dap1_dout_pb2";
+			nvidia,function = "i2s1";
+			nvidia,pull = <0>;
+			nvidia,tristate = <0>;
+			nvidia,enable-input = <0>;
+		};
+
+		mclk-output {
+			nvidia,pins = "aud_mclk_pbb0";
+			nvidia,function = "aud";
+			nvidia,pull = <0>;
+			nvidia,tristate = <0>;
+			nvidia,enable-input = <0>;
+		};
+	};
+
+	j21_i2c1_pins: j21-i2c1 {
+		i2c {
+			nvidia,pins = "gen1_i2c_sda_pj0", "gen1_i2c_scl_pj1";
+			nvidia,function = "i2c1";
+			nvidia,pull = <0>;
+			nvidia,tristate = <0>;
+			nvidia,enable-input = <1>;
+		};
+	};
+};
+
+&{/i2c@7000c000} {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&j21_i2c1_pins>;
+	clock-frequency = <100000>;
+
+	amp@34 {
+		compatible = "adi,ssm2518";
+		reg = <0x34>;
+		#sound-dai-cells = <0>;
+		assigned-clocks = <&tegra_pmc 0>; /* PMC CLK_OUT_1 */
+		assigned-clock-parents = <&tegra_car 120>; /* EXTERN1 */
+
+		port {
+			ssm2518_ep: endpoint {
+				remote-endpoint = <&i2s1_dap_ep>;
+				system-clock-frequency = <12288000>;
+			};
+		};
+	};
+};
+
+&{/sound} {
+	/* The Tegra graph splits I2S and the codec into chained DPCM links. */
+	routing = "Playback", "I2S1 DAP-Playback";
+};
+
+&{/pmc@7000e400/pinmux} {
+	j21_audio_pads: j21-audio-1v8 {
+		pins = "audio", "audio-hv";
+		power-source = <0>; /* TEGRA_IO_PAD_VOLTAGE_1V8 */
+		low-power-disable;
+	};
+};
+
+&tegra_i2s1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&j21_audio_pads &j21_i2s1_pins>;
+};
+
+&i2s1_dap_ep {
+	remote-endpoint = <&ssm2518_ep>;
+	dai-format = "i2s";
+	bitclock-master = <&i2s1_dap_ep>;
+	frame-master = <&i2s1_dap_ep>;
+	playback-only;
+	dai-tdm-slot-num = <2>;
+	dai-tdm-slot-width = <32>;
+	mclk-fs = <256>;
+	clocks = <&tegra_pmc 0>; /* PMC CLK_OUT_1 */
+	system-clock-direction-out;
+};

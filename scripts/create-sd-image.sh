@@ -259,8 +259,9 @@ case $target in
     device_tree_version=$DEBIAN_KERNEL_VERSION
     boot_dtb=tegra210-p2371-2180-nvgpu-fan.dtb
     camera_dtb=tegra210-p2371-2180-nvgpu-fan-ov5693.dtb
+    audio_dtb=tegra210-p2371-2180-nvgpu-fan-ov5693-ssm2518.dtb
     emc_dtb=tegra210-p2371-2180-nvgpu-fan-ov5693-emc-1600.dtb
-    dtbs=("$boot_dtb" "$camera_dtb" "$emc_dtb")
+    dtbs=("$boot_dtb" "$camera_dtb" "$audio_dtb" "$emc_dtb")
     ;;
   nano)
     board_title='Jetson Nano 4 GB'
@@ -771,6 +772,7 @@ if [[ -n $firmware_source || $target == tx1 ]]; then
 fi
 if [[ $target == tx1 ]]; then
   write_boot_entry debian-tegra-ov5693 'GPU + OV5693 camera' "$camera_dtb" ''
+  write_boot_entry debian-tegra-ov5693-ssm2518 'GPU + OV5693 camera + J21 SSM2518' "$audio_dtb" ''
 fi
 write_boot_entry debian-tegra-safe 'manual GPU load' "$boot_dtb" 'modprobe.blacklist=nvgpu'
 if [[ $target == tx1 ]]; then
